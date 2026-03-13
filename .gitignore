@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+
+# 忽略所有的视频素材文件夹
+vj_materials_vj1/
+vj_materials_vj2/
+video_cache/
+
+# 忽略所有沉重的可执行文件
+*.exe
+
+# 忽略临时配置与日志
+profile_main/
+profile_vj1/
+profile_vj2/
+cookies.txt
+crash_report.log
