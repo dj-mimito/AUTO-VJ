@@ -1,26 +1,4 @@
-\# 🎛️ AUTOVJ (VDJ Visual Pro Max - Arena Edition)
-
-
-
-!\[Version](https://img.shields.io/badge/Version-600.0.0-blue)
-
-!\[Python](https://img.shields.io/badge/Python-3.10%2B-green)
-
-!\[License](https://img.shields.io/badge/License-MIT-orange)
-
-!\[Platform](https://img.shields.io/badge/Platform-Windows-lightgrey)
-
-
-
-\*\*AUTOVJ\*\* 是一款专为现场演出（Live Set / Streaming）打造的工业级全自动 VJ 视觉引擎小程序。
-
-它能够深度读取 \[VirtualDJ](https://www.virtualdj.com/) 的底层物理数据，实现基于音乐节拍、乐段情绪和硬件状态的视觉画面全自动无缝切片与特效渲染。告别手动打光与切排，让 AI 替你完成视觉狂欢。
-
-
-
-\---
-
-
+AutoVJ是一款自动VJ的小程序
 
 \## 🔥 核心特性 (Core Features)
 
