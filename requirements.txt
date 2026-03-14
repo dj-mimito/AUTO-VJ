@@ -1,0 +1,12 @@
+# UI与多媒体引擎
+PyQt6>=6.5.0
+PyQt6-Qt6>=6.5.0
+
+# 网络通讯与爬虫
+requests>=2.31.0
+undetected-chromedriver>=3.5.3
+selenium>=4.11.0
+
+# 媒体解析与下载
+yt-dlp>=2023.11.16
+mutagen>=1.47.0
