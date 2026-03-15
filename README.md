@@ -1,10 +1,8 @@
 AutoVJ是一款自动VJ的小程序
 
-\## 需要注意 VDJ25版本以上的，可能需要手动修改下M3U历史路径为C:\Users\(你的电脑用户名)\AppData/Local/VirtualDJ  的目录下，如果显示端口占用的话也要改下端口。
+\## 需要注意 VDJ25版本以上的，可能需要手动修改下M3U历史路径为C:\Users\(你的电脑用户名)\AppData/Local/VirtualDJ  的目录下，如果80端口被占用的话也要改下端口。改完路径和端口需要重开下软件。
 
 \## 🔥 核心特性 (Core Features)
-
-
 
 \### 1. 🎵 智能音视频同步引擎 (Auto Audio-Video Sync)
 
@@ -92,6 +90,8 @@ AutoVJ是一款自动VJ的小程序
 
 \---
 
+
+\## 注意如果浏览器开着有冲突（比如莫名其妙弹出个需要选择用户）的话导致无法搜索的时候，可以关闭程序，将目录下的profile_main，profile_vj1,profile_vj2 三个文件给删了，这样就可以重置浏览器的设置，修复问题。
 
 
 \## 🎛️ 主控面板参数说明 (Control Panel Guide)
