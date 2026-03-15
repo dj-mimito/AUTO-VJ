@@ -1,26 +1,6 @@
-\# 🎛️ AUTOVJ (VDJ Visual Pro Max - Arena Edition)
+AutoVJ是一款自动VJ的小程序
 
-
-
-!\[Version](https://img.shields.io/badge/Version-600.0.0-blue)
-
-!\[Python](https://img.shields.io/badge/Python-3.10%2B-green)
-
-!\[License](https://img.shields.io/badge/License-MIT-orange)
-
-!\[Platform](https://img.shields.io/badge/Platform-Windows-lightgrey)
-
-
-
-\*\*AUTOVJ\*\* 是一款专为现场演出（Live Set / Streaming）打造的工业级全自动 VJ 视觉引擎小程序。
-
-它能够深度读取 \[VirtualDJ](https://www.virtualdj.com/) 的底层物理数据，实现基于音乐节拍、乐段情绪和硬件状态的视觉画面全自动无缝切片与特效渲染。告别手动打光与切排，让 AI 替你完成视觉狂欢。
-
-
-
-\---
-
-
+\## 需要注意 VDJ25版本以上的，可能需要手动修改下M3U历史路径为C:\Users\(你的电脑用户名)\AppData/Local/VirtualDJ  的目录下，如果显示端口占用的话也要改下端口。
 
 \## 🔥 核心特性 (Core Features)
 
@@ -38,11 +18,11 @@
 
 \### 2. 📺 动力学全息监视器 (Cyber-Hardware HUD)
 
-抛弃土味的文字叠加，系统内置了对标专业机甲 UI 的白色工业级硬件监视器：
+系统内置了对标专业机甲 UI 的白色工业级硬件监视器：
 
 \- 实时绘制双碟机 (Deck 1 / Deck 2) 的 15 格动态 VU 音量电平表。
 
-\- 毫秒级无延迟同步 VDJ 内部的 \*\*BPM、高中低频 EQ 状态、Loop 循环锁定状态、FX 效果器挂载数量\*\*。
+\- 毫秒级无延迟同步 VDJ 内部的 \*\*BPM、高中低频 EQ 状态
 
 
 
@@ -50,7 +30,7 @@
 
 \- \*\*图层分离:\*\* VJ1 负责底层氛围背景（如星空、隧道），VJ2 负责前景粒子特效（如漏光、故障噪点）。
 
-\- \*\*智能爬虫兜底:\*\* 当本地文件夹未命中合适素材时，引擎会根据当前曲风 (如 Dubstep, Trance) 自动唤醒后台物理隔离的 `undetected\_chromedriver`，潜入 Bilibili 静默搜索并挂载 4K 无水印循环视觉素材。
+\- \*\*智能爬虫兜底:\*\* 当本地文件夹未命中合适素材时，引擎会根据当前曲风 (如 Dubstep, Trance) 自动唤醒后台物理隔离的 `undetected\_chromedriver`，潜入 Bilibili 静默搜索并挂载循环视觉素材。
 
 
 
@@ -106,7 +86,9 @@
 
 5\. 打开 \*\*OBS Studio\*\*，添加一个【窗口采集】，选择弹出的黑色渲染大屏窗口，满屏铺满，即可开始 Live 演出！
 
+6\. 注意如果要关掉两个层，只留下视频源素材的视频层的话，要把全局动态透明度呼吸混合给关了
 
+注意，要在vdj下把拓展插件network control给安装了，端口设置为80，且historyDelay设置为2，表示切歌后两秒识别为下一首歌切换
 
 \---
 
@@ -185,4 +167,3 @@ python -m venv venv
 \# 3. 安装项目依赖清单
 
 pip install -r requirements.txt
-

@@ -2,13 +2,7 @@
 """
 ==============================================================================
 VDJ BILI VISUAL PRO MAX - THE ULTIMATE NATIVE VJ ENGINE (ARENA EDITION V6)
-Version: 600.0.0 (Cyber-HUD, Dual-Deck Auto Swapper, Deep Rhythm Matrix)
-Description: 
-    真正的工业级全自动专业 VJ 系统。
-    1. 【HUD引擎】告别土味文字，引入多维度 Cyberpunk 风格数据面板与动力学排版。
-    2. 【动态轮换】VJ1/VJ2 实现 Deck A/B 双轨无缝平滑切歌，根据乐段（32拍/64拍）自动换素材。
-    3. 【灯光图层】引入真实混合模式（Screen/Multiply），实现基于鼓点的动态光影。
-    4. 【流派矩阵】针对 Dubstep、Trance、House 深度定制物理扭曲与特效排列组合。
+Version: 600.0.3 (Deep Rhythm Matrix - HW Accel Import Fixed)
 ==============================================================================
 """
 
@@ -74,6 +68,14 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QGraphicsVideoItem
 
+# [核心修复]：模块名应为 QtOpenGLWidgets (带s)
+try:
+    from PyQt6.QtOpenGLWidgets import QOpenGLWidget 
+except ImportError:
+    # 兼容性兜底，某些精简版 PyQt 可能不包含此模块
+    print("WARNING: PyQt6.QtOpenGLWidgets not found. Hardware acceleration might be limited.")
+    QOpenGLWidget = QWidget
+
 # ============================================================================
 # [Web Automation Imports]
 # ============================================================================
@@ -91,14 +93,28 @@ except ImportError:
 # [Constants & Configuration]
 # ============================================================================
 APP_NAME = "VDJ Visual Pro Max - Arena Edition"
-VERSION = "600.0.0 (Deep Rhythm Matrix)"
-DEFAULT_VDJ_PATH = os.path.expanduser("~/Documents/VirtualDJ")
+VERSION = "600.0.3 (Deep Rhythm Matrix)"
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
 else:
     try: BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     except NameError: BASE_DIR = os.path.abspath(os.getcwd())
+
+CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+APP_CONFIG = {
+    "vdj_path": os.path.expanduser("~/Documents/VirtualDJ"), 
+    "vdj_port": "80"
+}
+if os.path.exists(CONFIG_FILE):
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            APP_CONFIG.update(json.load(f))
+    except: pass
+
+def save_config():
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(APP_CONFIG, f, indent=4)
 
 CACHE_DIR = os.path.join(BASE_DIR, "video_cache")
 VJ1_MATERIAL_DIR = os.path.join(BASE_DIR, "vj_materials_vj1")
@@ -205,7 +221,7 @@ class VJHelper:
         return a + (b - a) * t
 
 # ============================================================================
-# [AI Genre & Vibe Engine] - 高级情绪与曲风分类系统
+# [AI Genre & Vibe Engine]
 # ============================================================================
 class MusicGenre(Enum):
     EDM = "EDM / Big Room"      
@@ -236,7 +252,7 @@ def analyze_genre(title, artist):
     return MusicGenre.POP
 
 # ============================================================================
-# [State Management] - 融合细分节拍与乐段状态机
+# [State Management]
 # ============================================================================
 class VJStateManager:
     def __init__(self):
@@ -252,59 +268,50 @@ class VJStateManager:
             "vibe": EnergyVibe.CHILL,
             "deck": "active",
             "last_beat_time": time.time(),
-            "phrase_counter": 1,    # 1 to 32 (宏观乐段控制)
-            "total_beats": 0,       # 累计打拍
+            "phrase_counter": 1,    
+            "total_beats": 0,       
             "isDrop": False,
             "isBuildUp": False,
             "transition_trigger": False,
-            "macro_swap_trigger": False # 触发高级素材切片
+            "macro_swap_trigger": False 
         }
         self.energy_history = []
         self.long_term_energy = []
         self._lock = threading.Lock()
-
-        # 避免每秒发起几十次请求时反复建立 TCP 连接导致 VDJ 响应变慢或系统端口耗尽
         self.http_session = requests.Session()
 
     def update_from_vdj(self):
         deck = self.state["deck"]
         try:
-            # [修改]：新增左右碟音量、Loop状态和FX效果器状态的抓取
             endpoints = {
                 "level": f"deck {deck} level",
                 "beat": f"deck {deck} get_beat_num",
                 "pos": f"deck {deck} get_position",
                 "play": f"deck {deck} play",
                 "bpm": f"deck {deck} get_bpm",
-                
-                # --- Deck 1 核心数据 ---
                 "d1_bpm": "deck 1 get_bpm",
                 "d1_high": "deck 1 eq_high",
                 "d1_mid": "deck 1 eq_mid",
                 "d1_low": "deck 1 eq_low",
-                "d1_level": "deck 1 level",               # Deck 1 音量电平
-                "d1_loop": "deck 1 loop",                 # Deck 1 是否开启Loop
-                "d1_fx": "deck 1 get_effects_used",       # Deck 1 挂载的FX数量
-                
-                # --- Deck 2 核心数据 ---
+                "d1_level": "deck 1 level",               
+                "d1_loop": "deck 1 loop",                 
+                "d1_fx": "deck 1 get_effects_used",       
                 "d2_bpm": "deck 2 get_bpm",
                 "d2_high": "deck 2 eq_high",
                 "d2_mid": "deck 2 eq_mid",
                 "d2_low": "deck 2 eq_low",
-                "d2_level": "deck 2 level",               # Deck 2 音量电平
-                "d2_loop": "deck 2 loop",                 # Deck 2 是否开启Loop
-                "d2_fx": "deck 2 get_effects_used"        # Deck 2 挂载的FX数量
+                "d2_level": "deck 2 level",               
+                "d2_loop": "deck 2 loop",                 
+                "d2_fx": "deck 2 get_effects_used"        
             }
             results = {}
             for k, script in endpoints.items():
                 try:
-                    # [优化] 使用 self.http_session 替代 requests.get，性能提升数倍
-                    r = self.http_session.get(f"http://127.0.0.1:80/query?script={quote(script)}", timeout=0.05)
+                    r = self.http_session.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script={quote(script)}", timeout=0.2)
                     results[k] = r.text.strip() if r.status_code == 200 else "0"
                 except Exception: 
                     results[k] = "0"
             
-            # 解析主副通道的基础数据
             level_val = VJHelper.safe_float(results["level"])
             beat_val = int(VJHelper.safe_float(results["beat"]))
             if beat_val == 0: beat_val = 1
@@ -318,7 +325,6 @@ class VJStateManager:
                 trans_trig = False
                 macro_swap = False
                 
-                # ... (保留你原来的节拍、情绪、长短平均能量计算等逻辑) ...
                 if is_playing and beat_val != self.state["beat"]:
                     self.state["last_beat_time"] = time.time()
                     self.state["total_beats"] += 1
@@ -359,7 +365,6 @@ class VJStateManager:
                 if vibe != self.state["vibe"] and (is_drop or vibe == EnergyVibe.CHILL):
                     macro_swap = True
 
-                # [修复] 最终写入状态字典时，把双轨的 EQ 和 BPM 都写进去
                 self.state.update({
                     "level": level_val,
                     "isDrop": is_drop, 
@@ -371,7 +376,6 @@ class VJStateManager:
                     "transition_trigger": trans_trig or self.state["transition_trigger"],
                     "macro_swap_trigger": macro_swap or self.state["macro_swap_trigger"],
                     
-                    # 写入新抓取的数据，供 KineticHUDSystem 使用
                     "d1_bpm": VJHelper.safe_float(results.get("d1_bpm", 0.0)),
                     "d1_high": VJHelper.safe_float(results.get("d1_high", 0.5)),
                     "d1_mid": VJHelper.safe_float(results.get("d1_mid", 0.5)),
@@ -381,7 +385,6 @@ class VJStateManager:
                     "d2_mid": VJHelper.safe_float(results.get("d2_mid", 0.5)),
                     "d2_low": VJHelper.safe_float(results.get("d2_low", 0.5)),
 
-                    # [新增] 写入解析好的硬件状态
                     "d1_level": VJHelper.safe_float(results.get("d1_level", 0.0)),
                     "d2_level": VJHelper.safe_float(results.get("d2_level", 0.0)),
                     "d1_loop": str(results.get("d1_loop", "off")).lower() in ["on", "true", "1"],
@@ -414,8 +417,10 @@ vj_manager = VJStateManager()
 
 def vdj_polling_worker():
     while True:
-        vj_manager.update_from_vdj()
-        time.sleep(0.03)
+        try:
+            vj_manager.update_from_vdj()
+        except: pass
+        time.sleep(0.05)
 
 # ============================================================================
 # [Network Routing Core]
@@ -481,11 +486,12 @@ class MultiChannelProxy(http.server.BaseHTTPRequestHandler):
                         self.wfile.write(chunk)
                         self.wfile.flush()
                     except Exception: return 
-        except Exception: 
+        except Exception as e: 
+            print(f"[Proxy] Error streaming channel {channel}: {e}")
             pass
 
 # ============================================================================
-# [Triple-Browser Engine] 纯净无篡改的三核底层逻辑
+# [Triple-Browser Engine]
 # ============================================================================
 class TaskMode(Enum):
     AUTO = 1          
@@ -499,7 +505,6 @@ class MultiBrowserManager:
     @classmethod
     def get_driver(cls, instance_name="main"):
         with cls._lock:
-            # 严格按照有效的三核名字进行验证与捕获
             if instance_name not in cls._drivers:
                 cls._init_driver(instance_name)
             try:
@@ -514,21 +519,18 @@ class MultiBrowserManager:
     def _init_driver(cls, instance_name):
         print(f"[Engine] 启动 Bilibili 隔离环境: {instance_name.upper()}...")
         
-        if instance_name == "main":
-            profile_dir = PROFILE_DIR_MAIN
-        elif instance_name == "vj1":
-            profile_dir = PROFILE_DIR_VJ1
-        else:
-            profile_dir = PROFILE_DIR_VJ2
+        if instance_name == "main": profile_dir = PROFILE_DIR_MAIN
+        elif instance_name == "vj1": profile_dir = PROFILE_DIR_VJ1
+        else: profile_dir = PROFILE_DIR_VJ2
         
         options = uc.ChromeOptions()
         options.add_argument("--disable-gpu")
         options.add_argument("--mute-audio")
-        options.add_argument("--no-sandbox") # 核心稳定参数：防止三开爆内存
-        options.add_argument("--disable-dev-shm-usage") # 核心稳定参数
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-software-rasterizer")
         
         try:
-            # 采用最为稳定的原始显式调用逻辑
             driver = uc.Chrome(
                 options=options, 
                 user_data_dir=profile_dir, 
@@ -536,13 +538,9 @@ class MultiBrowserManager:
                 driver_executable_path=DRIVER_PATH
             )
             
-            # 各核心窗口错开，防止重叠
-            if instance_name == "main":
-                driver.set_window_rect(50, 50, 1024, 768)
-            elif instance_name == "vj1":
-                driver.set_window_rect(100, 100, 1024, 768)
-            else:
-                driver.set_window_rect(150, 150, 1024, 768)
+            if instance_name == "main": driver.set_window_rect(50, 50, 1024, 768)
+            elif instance_name == "vj1": driver.set_window_rect(100, 100, 1024, 768)
+            else: driver.set_window_rect(150, 150, 1024, 768)
                 
             cls._drivers[instance_name] = driver
         except Exception as e:
@@ -561,23 +559,17 @@ class EngineStarter(QThread):
     finished_signal = pyqtSignal()
     def run(self):
         try:
-            # 强行按顺序唤醒并显式初始化全部三个浏览器核，增加错峰延时防止端口和文件锁冲突！
             self.log_signal.emit("⏳ 正在拉起 [主核] 浏览器，这通常需要几秒钟...")
             MultiBrowserManager.get_driver("main")
             self.log_signal.emit("✅ 主核浏览器后端已就绪 (Main Engine Standby)")
-            
-            time.sleep(3) # 核心修复：给 undetected_chromedriver 留出初始化底层 WebSocket 端口的时间
-            
+            time.sleep(3) 
             self.log_signal.emit("⏳ 正在拉起 [VJ1] 氛围核浏览器...")
             MultiBrowserManager.get_driver("vj1")
             self.log_signal.emit("✅ VJ1图层渲染核已就绪 (VJ1 Material Engine Standby)")
-            
-            time.sleep(3) # 核心修复：防止底层多开文件锁冲突
-            
+            time.sleep(3) 
             self.log_signal.emit("⏳ 正在拉起 [VJ2] 粒子核浏览器...")
             MultiBrowserManager.get_driver("vj2")
             self.log_signal.emit("✅ VJ2图层渲染核已就绪 (VJ2 Material Engine Standby)")
-            
             self.finished_signal.emit()
         except Exception as e: 
             self.log_signal.emit(f"❌ 浏览器启动失败: {e}")
@@ -626,7 +618,7 @@ class VDJPoller(QThread):
             time.sleep(0.1)
             if not self.network_ok:
                 try:
-                    r = requests.get("http://127.0.0.1:80/query?script=get_clock", timeout=0.5)
+                    r = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=get_clock", timeout=0.5)
                     if r.status_code == 200:
                         self.network_ok = True
                         self.network_ok_signal.emit()
@@ -635,7 +627,8 @@ class VDJPoller(QThread):
             try:
                 state = {'is_playing': False, 'pitch': 1.0, 'time_ms': 0.0, 'pos_ratio': -1.0, 'cur_bpm': 0.0, 'orig_bpm': 0.0}
                 deck_str = self.current_deck
-                r_play = requests.get(f"http://127.0.0.1:80/query?script=deck%20{deck_str}%20play", timeout=0.1)
+                
+                r_play = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{deck_str}%20play", timeout=0.3)
                 if r_play.status_code == 200:
                     play_str = r_play.text.strip().lower()
                     if play_str.replace('.', '', 1).isdigit(): state['is_playing'] = VJHelper.safe_float(play_str) > 0.5
@@ -643,8 +636,8 @@ class VDJPoller(QThread):
                         
                 target_rate, cur_bpm, orig_bpm, bpm_valid = 1.0, 0.0, 0.0, False
                 try:
-                    r_bpm = requests.get(f"http://127.0.0.1:80/query?script=deck%20{deck_str}%20get_bpm", timeout=0.1)
-                    r_obpm = requests.get(f"http://127.0.0.1:80/query?script=deck%20{deck_str}%20get_bpm%20%27absolute%27", timeout=0.1)
+                    r_bpm = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{deck_str}%20get_bpm", timeout=0.3)
+                    r_obpm = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{deck_str}%20get_bpm%20%27absolute%27", timeout=0.3)
                     if r_bpm.status_code == 200 and r_obpm.status_code == 200:
                         bpm_str, obpm_str = r_bpm.text.strip(), r_obpm.text.strip()
                         if "error" not in bpm_str.lower() and "error" not in obpm_str.lower():
@@ -656,7 +649,7 @@ class VDJPoller(QThread):
                 
                 if not bpm_valid:
                     try:
-                        r_pitch = requests.get(f"http://127.0.0.1:80/query?script=deck%20{deck_str}%20get_pitch_value", timeout=0.1)
+                        r_pitch = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{deck_str}%20get_pitch_value", timeout=0.3)
                         if r_pitch.status_code == 200:
                             pitch_str = r_pitch.text.strip().replace('%', '')
                             if "error" not in pitch_str.lower():
@@ -670,14 +663,14 @@ class VDJPoller(QThread):
                 state['pitch'] = max(0.01, min(target_rate, 4.0)) 
                 state['cur_bpm'], state['orig_bpm'] = cur_bpm, orig_bpm
                         
-                r_pos = requests.get(f"http://127.0.0.1:80/query?script=deck%20{deck_str}%20get_position", timeout=0.1)
+                r_pos = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{deck_str}%20get_position", timeout=0.3)
                 if r_pos.status_code == 200:
                     pos_str = r_pos.text.strip()
                     if "error" not in pos_str.lower():
                         val = VJHelper.safe_float(pos_str, -1.0)
                         if val >= 0: state['pos_ratio'] = val
                             
-                r_time = requests.get(f"http://127.0.0.1:80/query?script=deck%20{deck_str}%20get_time%20%27absolute%27", timeout=0.1)
+                r_time = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{deck_str}%20get_time%20%27absolute%27", timeout=0.3)
                 if r_time.status_code == 200:
                     parsed_ms = VJHelper.parse_vdj_time_to_ms(r_time.text)
                     if parsed_ms is not None: state['time_ms'] = parsed_ms
@@ -692,7 +685,7 @@ class VDJPoller(QThread):
         self.wait()
 
 # ============================================================================
-# [Task Worker] - 安全的下载队列与极致稳定的 JS 提取器
+# [Task Worker] 
 # ============================================================================
 class SearchWorker(QObject):
     finished = pyqtSignal(dict)
@@ -718,7 +711,7 @@ class SearchWorker(QObject):
                 if self.raw_filename:
                     for d in range(1, 5):
                         try:
-                            r_file = requests.get(f"http://127.0.0.1:80/query?script=deck%20{d}%20get_filepath", timeout=0.5)
+                            r_file = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{d}%20get_filepath", timeout=0.5)
                             if r_file.status_code == 200:
                                 filepath = r_file.text.strip().replace('"', '').replace("'", "")
                                 if filepath and "error" not in filepath.lower() and filepath != "0":
@@ -731,24 +724,24 @@ class SearchWorker(QObject):
                 for attempt in range(12):
                     try:
                         dur_sec = 0
-                        r_dur = requests.get(f"http://127.0.0.1:80/query?script=deck%20{target_deck}%20get_time%20%27total%27%20%27absolute%27", timeout=0.5)
+                        r_dur = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{target_deck}%20get_time%20%27total%27%20%27absolute%27", timeout=0.5)
                         if r_dur.status_code == 200:
                             dur_ms = VJHelper.parse_vdj_time_to_ms(r_dur.text)
                             if dur_ms and dur_ms > 0: dur_sec = dur_ms / 1000.0
                                 
                         if dur_sec <= 0:
-                            r_dur = requests.get(f"http://127.0.0.1:80/query?script=deck%20{target_deck}%20get_songlength", timeout=0.5)
+                            r_dur = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{target_deck}%20get_songlength", timeout=0.5)
                             if r_dur.status_code == 200:
                                 dur_ms = VJHelper.parse_vdj_time_to_ms(r_dur.text)
                                 if dur_ms and dur_ms > 0:
                                     dur_sec = dur_ms / 1000.0
                                     pitch_rate = 1.0
                                     try:
-                                        r_bpm = requests.get(f"http://127.0.0.1:80/query?script=deck%20{target_deck}%20get_bpm", timeout=0.2)
-                                        r_obpm = requests.get(f"http://127.0.0.1:80/query?script=deck%20{target_deck}%20get_bpm%20%27absolute%27", timeout=0.2)
+                                        r_bpm = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{target_deck}%20get_bpm", timeout=0.2)
+                                        r_obpm = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{target_deck}%20get_bpm%20%27absolute%27", timeout=0.2)
                                         if r_bpm.status_code == 200 and r_obpm.status_code == 200:
                                             bpm_val, obpm_val = VJHelper.safe_float(r_bpm.text), VJHelper.safe_float(r_obpm.text)
-                                            if obpm_val > 0: pitch_rate = bpm_val / obpm_val
+                                            if obpm_val > 0: pitch_rate = bpm_val / osbpm_val
                                     except Exception: pass
                                     dur_sec = dur_sec * pitch_rate
                         
@@ -765,7 +758,6 @@ class SearchWorker(QObject):
             driver, target_url, candidate_urls, found_candidates = None, "", [], []
 
             try:
-                # 重新映射带有 A/B 轨标记的频道名到真实的 3 个内核
                 browser_name = "main"
                 if "vj1" in self.channel: browser_name = "vj1"
                 elif "vj2" in self.channel: browser_name = "vj2"
@@ -882,19 +874,12 @@ class SearchWorker(QObject):
                     valid_vj = found_candidates
                     if any(c['duration'] > 0 for c in found_candidates):
                         valid_vj = [c for c in found_candidates if c['duration'] == 0 or (10 <= c['duration'] <= 7200)]
-                    # ======== 【新增】：屏蔽教学与教程类视频 ========
                     bad_words = ["教", "学", "课程", "如何", "演示", "教程", "讲解"]
                     valid_vj = [c for c in valid_vj if not any(bw in c['title'] for bw in bad_words)]
-                    # ===============================================
 
-                    # ======== 【新增】：强制标题必须包含特定字样 ========
-                    # 我们强制挑选标题中含有“素材”或“背景”或“VJ”的视频
                     strict_vj = [c for c in valid_vj if any(kw in c['title'].upper() for kw in ["素材", "背景", "VJ"])]
-                    
-                    # 安全兜底：如果过滤后还有结果，就用这个严格的结果；如果B站没搜到带“素材”的，为了防闪退，暂时退回到普通的过滤列表
                     if strict_vj:
                         valid_vj = strict_vj
-                    # =================================================
                     
                     if valid_vj:
                         valid_vj.sort(key=lambda x: x['views'], reverse=True)
@@ -997,26 +982,22 @@ class SearchWorker(QObject):
         self.finished.emit(res_data)
 
 # ============================================================================
-# [Native UI & Compositing Engine - THE PRO VJ RACK] 
+# [Native UI & Compositing Engine] 
 # ============================================================================
 class KineticHUDSystem:
-    """ 高阶动力学排版与 Cyberpunk HUD 系统 """
     def __init__(self, scene, w, h):
         self.scene = scene
         self.w, self.h = w, h
         
-        # 字体设定
         self.font_main = QFont("Arial Black", 50, QFont.Weight.Black)
         self.font_sub = QFont("Consolas", 20, QFont.Weight.Bold)
         self.font_hud = QFont("Consolas", 14)
 
-        # [新增] 硬件混音台状态 HUD
         self.mixer_hud = QGraphicsTextItem("")
         self.mixer_hud.setFont(self.font_hud)
-        self.mixer_hud.setDefaultTextColor(QColor(255, 255, 255, 220)) # 采用青色电平风格
+        self.mixer_hud.setDefaultTextColor(QColor(255, 255, 255, 220)) 
         self.scene.addItem(self.mixer_hud)
 
-        # ======= 【新增】：左上角封面与歌名 =======
         self.cover_item = QGraphicsPixmapItem()
         self.scene.addItem(self.cover_item)
 
@@ -1025,26 +1006,17 @@ class KineticHUDSystem:
         self.tl_title_item.setDefaultTextColor(QColor(255, 255, 255, 200))
         self.scene.addItem(self.tl_title_item)
 
-        # 中心主标题 (Artist - Title)
         self.title_item = QGraphicsTextItem("")
         self.title_item.setFont(self.font_main)
         self.title_item.setDefaultTextColor(QColor(255, 255, 255))
         self.scene.addItem(self.title_item)
         
-        # 阴影/辉光
         self.title_shadow = QGraphicsDropShadowEffect()
         self.title_shadow.setBlurRadius(25)
         self.title_shadow.setColor(QColor(0, 255, 255, 200))
         self.title_shadow.setOffset(0, 0)
         self.title_item.setGraphicsEffect(self.title_shadow)
 
-        # 底部状态条 (Vibe / Energy)
-        # self.status_item = QGraphicsTextItem("SYS.STANDBY // AWAITING VDJ")
-        # self.status_item.setFont(self.font_sub)
-        # self.status_item.setDefaultTextColor(QColor(0, 255, 100))
-        # self.scene.addItem(self.status_item)
-
-        # 侧边 HUD 数据 (BPM, Phrase)
         self.hud_left = QGraphicsTextItem("BPM: ---\nPHR: --")
         self.hud_left.setFont(self.font_hud)
         self.hud_left.setDefaultTextColor(QColor(255, 255, 255, 150))
@@ -1055,38 +1027,26 @@ class KineticHUDSystem:
         self.hud_right.setDefaultTextColor(QColor(255, 255, 255, 150))
         self.scene.addItem(self.hud_right)
         
-        # 进度指示器
-        # self.progress_bar = QGraphicsRectItem()
-        # self.progress_bar.setBrush(QBrush(QColor(255, 0, 85, 200)))
-        # self.progress_bar.setPen(QPen(Qt.PenStyle.NoPen))
-        # self.scene.addItem(self.progress_bar)
-
         self.hide_all()
 
-        # ======= 【新增】：接收封面图片数据的方法 =======
     def set_cover(self, image_data):
         if image_data:
             pix = QPixmap.fromImage(QImage.fromData(image_data)).scaled(
                 80, 80, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
             self.cover_item.setPixmap(pix)
         else:
-            self.cover_item.setPixmap(QPixmap()) # 没有封面时留空
-    # ============================================
+            self.cover_item.setPixmap(QPixmap()) 
 
     def hide_all(self):
         self.title_item.hide()
-        #self.status_item.hide()
         self.hud_left.hide()
         self.hud_right.hide()
-        #self.progress_bar.hide()
         self.mixer_hud.hide()
 
     def show_all(self):
         self.title_item.show()
-        #self.status_item.show()
         self.hud_left.show()
         self.hud_right.show()
-        #self.progress_bar.show()
         self.mixer_hud.show()
 
     def update(self, state, kick_env, snare_env, w, h, cfg):
@@ -1099,61 +1059,31 @@ class KineticHUDSystem:
         phrase = state.get('phrase_counter', 1)
         level = state.get('level', 0.0)
         pos = state.get('pos_ratio', 0.0)
-        # =========================================================
-        # [新增] 渲染核心硬件状态 (Volume, Loop, FX) 
-        # =========================================================
-        # cfg = self.scene.views()[0].window().vj_config # 拿到父窗口的 cfg
         
         if cfg.get('fx_mixer_hud', True):
             self.mixer_hud.show()
-            
             def make_vu_bar(val):
-                """将音量映射为 15格 的字符指示器"""
                 bars = max(0, min(15, int(val * 15))) 
-                # 满格时显示红色警告效果
                 bar_str = "█" * bars + "-" * (15 - bars)
                 return bar_str
 
-            # 抓取数据
             d1_vol = state.get("d1_level", 0.0)
             d2_vol = state.get("d2_level", 0.0)
             
-            d1_loop = "[ LOCK ]" if state.get("d1_loop", False) else "[ OPEN ]"
-            d2_loop = "[ LOCK ]" if state.get("d2_loop", False) else "[ OPEN ]"
-            
-            d1_fx = f"ACTIVE: {state.get('d1_fx', 0)}" if state.get('d1_fx', 0) > 0 else "BYPASS"
-            d2_fx = f"ACTIVE: {state.get('d2_fx', 0)}" if state.get('d2_fx', 0) > 0 else "BYPASS"
-
-            # 构建对称的字符串面板
-            mixer_text = (
-                f"┌──────── DECK 1 ────────┐      ┌──────── DECK 2 ────────┐\n"
-                f" VOL  [{make_vu_bar(d1_vol)}]\n"
-                #f" LOOP {d1_loop.ljust(21)}  VOL  [{make_vu_bar(d2_vol)}]\n"
-                #f" FX   {d1_fx.ljust(21)}  LOOP {d2_loop}\n"
-                f"                             FX   {d2_fx}\n"
-            )
-            # 对齐微调（由于字体等宽，空格排版可以做到极简工业感）
             mixer_text = (
                 f"L-VOL : [{make_vu_bar(d1_vol)}]  ||  R-VOL : [{make_vu_bar(d2_vol)}]\n"
-                #f"L-LOOP: {d1_loop.ljust(17)}  ||  R-LOOP: {d2_loop}\n"
-                #f"L-FX  : {d1_fx.ljust(17)}  ||  R-FX  : {d2_fx}"
             )
             
             self.mixer_hud.setPlainText(mixer_text)
             m_br = self.mixer_hud.boundingRect()
-            # 居中放置在画面底部偏上一点的位置
             self.mixer_hud.setPos((w - m_br.width()) / 2, h - m_br.height() - 30)
-            
         else:
             self.mixer_hud.hide()
 
-# ======= 【新增】：绘制双碟盘的 BPM 与高中低频 EQ 可视化 =======
         def make_bar(val):
-            """将 0.0~1.0 的模拟量映射为 10 格字符图表 (VDJ EQ 归零中心通常是 0.5)"""
             bars = max(0, min(10, int(val * 10))) 
             return "■" * bars + "-" * (10 - bars)
 
-        # --- 渲染左侧 HUD (Deck 1) ---
         d1_bpm = state.get("d1_bpm", 0.0)
         d1_h, d1_m, d1_l = state.get("d1_high", 0.5), state.get("d1_mid", 0.5), state.get("d1_low", 0.5)
         text_left = (
@@ -1166,7 +1096,6 @@ class KineticHUDSystem:
         self.hud_left.setPlainText(text_left)
         self.hud_left.setPos(50, h - 180)
         
-        # --- 渲染右侧 HUD (Deck 2) ---
         d2_bpm = state.get("d2_bpm", 0.0)
         d2_h, d2_m, d2_l = state.get("d2_high", 0.5), state.get("d2_mid", 0.5), state.get("d2_low", 0.5)
         text_right = (
@@ -1179,50 +1108,13 @@ class KineticHUDSystem:
         self.hud_right.setPlainText(text_right)
         r_br = self.hud_right.boundingRect()
         self.hud_right.setPos(w - r_br.width() - 50, h - 180)
-        # =========================================================
 
-        # 进度条 (底部细线)
-        # bar_w = w * max(0, min(1, pos))
-        # self.progress_bar.setRect(0, h - 10, bar_w, 10)
-
-        # 更新左上角信息与位置
         display_tl = f"{artist} - {title}" if artist else title
         self.tl_title_item.setPlainText(display_tl)
 
-        # 锚定左上角 (X: 30, Y: 30)
         cover_x, cover_y = 30, 30
         self.cover_item.setPos(cover_x, cover_y)
         self.tl_title_item.setPos(cover_x + 95, cover_y + 25)
-
-        # 2. 状态条
-        # stat_text = f"[{genre.name}] // {vibe.name}"
-        # self.status_item.setPlainText(stat_text)
-        # s_br = self.status_item.boundingRect()
-        # self.status_item.setPos((w - s_br.width()) / 2, h - s_br.height() - 50)
-        
-        # 3. 侧边 HUD
-        # self.hud_left.setPlainText(f"BPM: {bpm:.1f}\nPHR: {phrase}/32\nBEAT: {state.get('beat', 1)}")
-        # self.hud_left.setPos(50, h - 150)
-        
-        # self.hud_right.setPlainText(f"LVL: {level:.2f}\nSYNC: ON\nDECK: {state.get('deck', 'A').upper()}")
-        # r_br = self.hud_right.boundingRect()
-        # self.hud_right.setPos(w - r_br.width() - 50, h - 150)
-
-        # 4. 进度条 (底部细线)
-        # bar_w = w * max(0, min(1, pos))
-        # self.progress_bar.setRect(0, h - 10, bar_w, 10)
-
-        # ======= 【新增】：更新左上角信息与位置 =======
-        display_tl = f"{artist} - {title}" if artist else title
-        self.tl_title_item.setPlainText(display_tl)
-
-        # 锚定在左上角 (X: 30, Y: 30 为封面位置)
-        cover_x, cover_y = 30, 30
-        self.cover_item.setPos(cover_x, cover_y)
-        # 歌名放在封面右侧居中对齐的位置
-        self.tl_title_item.setPos(cover_x + 95, cover_y + 25)
-        # ===========================================
-
 
 class VJGraphicsScene(QGraphicsScene):
     def __init__(self, parent=None):
@@ -1242,12 +1134,16 @@ class OBSVideoWindow(QMainWindow):
         self.view.setStyleSheet("background: black; border: none;")
         self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        # [核心修正] 挂载 OpenGL 视口以启用硬件加速，防止 "Unable to copy frame from decoder pool"
+        self.opengl_viewport = QOpenGLWidget()
+        self.view.setViewport(self.opengl_viewport)
+        
         self.setCentralWidget(self.view)
         
         self.scene = VJGraphicsScene(self)
         self.view.setScene(self.scene)
         
-        # --- Layer 0: Main Video ---
         self.main_video_item = QGraphicsVideoItem()
         self.scene.addItem(self.main_video_item)
         self.player_main = QMediaPlayer()
@@ -1255,7 +1151,6 @@ class OBSVideoWindow(QMainWindow):
         self.player_main.setAudioOutput(self.audio_main)
         self.player_main.setVideoOutput(self.main_video_item)
         
-        # --- Layer 1: VJ1 (A/B Deck for Crossfading) ---
         self.vj1_item_A = QGraphicsVideoItem()
         self.vj1_item_B = QGraphicsVideoItem()
         self.vj1_item_A.setOpacity(0.0)
@@ -1267,10 +1162,8 @@ class OBSVideoWindow(QMainWindow):
         self.player_vj1_B = QMediaPlayer()
         self.player_vj1_A.setVideoOutput(self.vj1_item_A)
         self.player_vj1_B.setVideoOutput(self.vj1_item_B)
-        
-        self.active_vj1_deck = "A" # Track which deck is currently showing
+        self.active_vj1_deck = "A"
 
-        # --- Layer 2: VJ2 (A/B Deck) ---
         self.vj2_item_A = QGraphicsVideoItem()
         self.vj2_item_B = QGraphicsVideoItem()
         self.vj2_item_A.setOpacity(0.0)
@@ -1282,30 +1175,24 @@ class OBSVideoWindow(QMainWindow):
         self.player_vj2_B = QMediaPlayer()
         self.player_vj2_A.setVideoOutput(self.vj2_item_A)
         self.player_vj2_B.setVideoOutput(self.vj2_item_B)
-        
         self.active_vj2_deck = "A"
 
-        # --- FX Layers: Light & Composition ---
         self.color_fx = QGraphicsColorizeEffect()
         self.color_fx.setColor(QColor(255, 0, 50))
         self.color_fx.setStrength(0.0)
         self.main_video_item.setGraphicsEffect(self.color_fx)
 
-        # Ambient Glow Layer (Screen/Add simulation)
         self.glow_rect = QGraphicsRectItem()
         self.glow_rect.setBrush(QBrush(QColor(0, 150, 255, 0)))
         self.scene.addItem(self.glow_rect)
 
-        # Strobe / Flash Layer
         self.flash_rect = QGraphicsRectItem()
         self.flash_rect.setBrush(QBrush(QColor(255, 255, 255, 255)))
         self.flash_rect.setOpacity(0.0)
         self.scene.addItem(self.flash_rect)
         
-        # --- High-End HUD ---
         self.hud = KineticHUDSystem(self.scene, 1280, 720)
         
-        # Physics Variables
         self._target_scale_x, self._target_scale_y = 1.0, 1.0
         self._current_scale_x, self._current_scale_y = 1.0, 1.0
         self._target_rot, self._current_rot = 0.0, 0.0
@@ -1315,8 +1202,7 @@ class OBSVideoWindow(QMainWindow):
         self._current_shear_x, self._current_shear_y = 0.0, 0.0
         self._hue_offset = 0
         
-        # Deck Crossfade states
-        self.vj1_cf = 1.0 # 1.0 means A is fully visible, 0.0 means B is fully visible
+        self.vj1_cf = 1.0 
         self.vj2_cf = 1.0
 
         self.vj_config = {}
@@ -1327,7 +1213,6 @@ class OBSVideoWindow(QMainWindow):
         self.player_main.durationChanged.connect(self.duration_changed.emit)
         self.player_main.mediaStatusChanged.connect(self._handle_main_loop)
         
-        # Loop for all decks
         self.player_vj1_A.mediaStatusChanged.connect(lambda s: self._handle_loop(self.player_vj1_A, s))
         self.player_vj1_B.mediaStatusChanged.connect(lambda s: self._handle_loop(self.player_vj1_B, s))
         self.player_vj2_A.mediaStatusChanged.connect(lambda s: self._handle_loop(self.player_vj2_A, s))
@@ -1335,7 +1220,7 @@ class OBSVideoWindow(QMainWindow):
         
         self.vj_timer = QTimer(self)
         self.vj_timer.timeout.connect(self._render_vj_frame)
-        self.vj_timer.start(16) # 60FPS 平滑渲染
+        self.vj_timer.start(16) 
 
     def _handle_main_loop(self, status):
         if status == QMediaPlayer.MediaStatus.EndOfMedia and self.is_looping:
@@ -1360,9 +1245,8 @@ class OBSVideoWindow(QMainWindow):
             QCoreApplication.processEvents() 
             self.player_main.setSource(QUrl(url) if url.startswith("http") else QUrl.fromLocalFile(url))
             self.needs_initial_sync = True 
-            self.player_main.pause() 
+            self.player_main.play() 
         elif "vj1" in channel:
-            # Dual Deck Swap Logic for VJ1
             new_deck = "B" if self.active_vj1_deck == "A" else "A"
             player = self.player_vj1_B if new_deck == "B" else self.player_vj1_A
             player.stop()
@@ -1370,7 +1254,6 @@ class OBSVideoWindow(QMainWindow):
             player.play()
             self.active_vj1_deck = new_deck
         elif "vj2" in channel:
-            # Dual Deck Swap Logic for VJ2
             new_deck = "B" if self.active_vj2_deck == "A" else "A"
             player = self.player_vj2_B if new_deck == "B" else self.player_vj2_A
             player.stop()
@@ -1388,12 +1271,6 @@ class OBSVideoWindow(QMainWindow):
         self.player_main.stop(); self.clear_overlay(); self.player_main.setSource(QUrl())
 
     def _render_vj_frame(self):
-        """
-        ======================================================================
-        极致深度 VJ 渲染引擎 (The VJ Matrix Engine)
-        包含了灯光图层、双轨透明度交叉淡入淡出、微观节拍物理形变。
-        ======================================================================
-        """
         state = vj_manager.get_state()
         cfg = self.vj_config
         w, h = self.width(), self.height()
@@ -1411,7 +1288,6 @@ class OBSVideoWindow(QMainWindow):
         time_since_beat = now - state.get('last_beat_time', now)
         phase = min(1.0, time_since_beat / beat_duration) 
         
-        # 4维微观包络发生器
         kick_env = math.exp(-phase * 6.0) if beat in [1, 3] else 0.0
         snare_env = math.exp(-phase * 8.0) if beat in [2, 4] else 0.0
         hat_env = math.exp(-(phase % 0.25) * 10.0)
@@ -1432,26 +1308,18 @@ class OBSVideoWindow(QMainWindow):
                 item.setPos(0, 0)
             return
 
-        # ==========================================
-        # 交叉淡入淡出逻辑 (Crossfading)
-        # ==========================================
-        cf_speed = 0.02 # Fade speed
+        cf_speed = 0.02 
         if self.active_vj1_deck == "A": self.vj1_cf = min(1.0, self.vj1_cf + cf_speed)
         else: self.vj1_cf = max(0.0, self.vj1_cf - cf_speed)
         
         if self.active_vj2_deck == "A": self.vj2_cf = min(1.0, self.vj2_cf + cf_speed)
         else: self.vj2_cf = max(0.0, self.vj2_cf - cf_speed)
 
-        # 全局参数归零重置
         self._target_scale_x, self._target_scale_y = 1.0, 1.0
         self._target_rot = 0.0
         self._target_dx, self._target_dy = 0.0, 0.0
         self._target_shear_x, self._target_shear_y = 0.0, 0.0
         lerp_speed = 0.2 
-
-        # ==========================================
-        # 深度视觉矩阵 (Deep Visual Matrix based on Genre & Vibe)
-        # ==========================================
         
         if trans_trigger:
             self.flash_rect.setBrush(QBrush(QColor(255, 255, 255)))
@@ -1468,7 +1336,6 @@ class OBSVideoWindow(QMainWindow):
                 self._target_scale_x = 1.05 + (energy * 0.02)
                 self._target_scale_y = 1.05 + (energy * 0.02)
             self.flash_rect.hide()
-            # 柔和的深色光晕
             self.glow_rect.setBrush(QBrush(QColor(0, 20, 50, int(50 * energy))))
             self.glow_rect.show()
 
@@ -1486,14 +1353,12 @@ class OBSVideoWindow(QMainWindow):
                 self.flash_rect.show()
             else: self.flash_rect.hide()
             
-            # Build-Up 光晕逐渐变亮，变黄/白
             self.glow_rect.setBrush(QBrush(QColor(255, 200, 0, int(100 * energy))))
             self.glow_rect.show()
 
         elif is_drop:
             lerp_speed = 0.8 if snare_env > 0 or kick_env > 0 else 0.4
             
-            # 1. 物理膨胀/抖动
             if cfg.get('fx_shake', True):
                 shake_amp = kick_env * (30 if genre == MusicGenre.DUBSTEP else 15)
                 self._target_dx = random.uniform(-shake_amp, shake_amp)
@@ -1502,7 +1367,6 @@ class OBSVideoWindow(QMainWindow):
                 self._target_scale_x *= base_zoom
                 self._target_scale_y *= base_zoom
 
-            # 2. 剪切畸变 (Shear)
             if cfg.get('fx_glitch', False):
                 if genre in [MusicGenre.DUBSTEP, MusicGenre.GARAGE] and snare_env > 0.5:
                     self._target_shear_x = snare_env * random.choice([0.5, -0.5])
@@ -1510,7 +1374,6 @@ class OBSVideoWindow(QMainWindow):
                 elif snare_env > 0.8:
                     self._target_shear_x = 0.15 * random.choice([1, -1])
 
-            # 3. 动态镜像与翻转
             if cfg.get('fx_mirror', False):
                 if genre in [MusicGenre.EDM, MusicGenre.ANISONG]:
                     if beat == 1 and kick_env > 0.4: self._target_scale_x *= -1.0
@@ -1518,7 +1381,6 @@ class OBSVideoWindow(QMainWindow):
                 elif genre == MusicGenre.HOUSE and beat == 4 and phase > 0.7:
                     self._target_scale_x *= -1.0
 
-            # 4. 色彩映射与频闪
             if cfg.get('fx_hue', False):
                 self._hue_offset = (self._hue_offset + int(kick_env * 30)) % 360
                 self.color_fx.setColor(QColor.fromHsl(self._hue_offset, 255, 128))
@@ -1533,13 +1395,11 @@ class OBSVideoWindow(QMainWindow):
             else:
                 self.flash_rect.hide()
 
-            # 5. Drop 环境强光
             glow_c = QColor(255, 0, 80, int(150 * bass_env)) if genre == MusicGenre.DUBSTEP else QColor(0, 255, 200, int(150 * bass_env))
             self.glow_rect.setBrush(QBrush(glow_c))
             self.glow_rect.show()
 
         else:
-            # Active/Verse 常规平滑游走
             lerp_speed = 0.2
             if cfg.get('fx_shake', True):
                 self._target_scale_x = 1.0 + (kick_env * 0.05)
@@ -1547,7 +1407,6 @@ class OBSVideoWindow(QMainWindow):
             self.flash_rect.hide()
             self.glow_rect.hide()
 
-        # ====== 应用 LERP 插值与变形矩阵 ======
         self._current_scale_x = VJHelper.lerp(self._current_scale_x, self._target_scale_x, lerp_speed)
         self._current_scale_y = VJHelper.lerp(self._current_scale_y, self._target_scale_y, lerp_speed)
         self._current_rot = VJHelper.lerp(self._current_rot, self._target_rot, lerp_speed)
@@ -1566,9 +1425,6 @@ class OBSVideoWindow(QMainWindow):
             item.setTransform(transform)
             item.setPos(self._current_dx, self._current_dy)
 
-        # ==========================================
-        # 多图层智能呼吸与混色 (Reactive Opacity Mixer & Dual Deck)
-        # ==========================================
         base_op1 = cfg.get('op_vj1', 0.5)
         base_op2 = cfg.get('op_vj2', 0.3)
         
@@ -1577,26 +1433,21 @@ class OBSVideoWindow(QMainWindow):
 
         if cfg.get('fx_reactive', False):
             if is_drop:
-                # 强烈的明暗互斥 (Ducking effect)
                 real_op1 = min(1.0, max(0.0, base_op1 + (kick_env * 0.5)))
                 if genre == MusicGenre.GARAGE:
-                    real_op2 = base_op2 if random.random() > 0.5 else 0.0 # 故障抽帧
+                    real_op2 = base_op2 if random.random() > 0.5 else 0.0 
                 else:
                     real_op2 = min(1.0, base_op2 + (snare_env * 0.6))
             else:
                 real_op1 = min(1.0, max(0.0, base_op1 + (energy * 0.2) - 0.1))
                 real_op2 = min(1.0, base_op2 + (bass_env * 0.3))
 
-        # Apply Crossfade Opacity
         self.vj1_item_A.setOpacity(real_op1 * self.vj1_cf)
         self.vj1_item_B.setOpacity(real_op1 * (1.0 - self.vj1_cf))
         
         self.vj2_item_A.setOpacity(real_op2 * self.vj2_cf)
         self.vj2_item_B.setOpacity(real_op2 * (1.0 - self.vj2_cf))
 
-        # ==========================================
-        # 动力学排版 HUD 更新
-        # ==========================================
         if cfg.get('fx_text', True):
             self.hud.show_all()
             self.hud.update(state, kick_env, snare_env, w, h, cfg)
@@ -1629,10 +1480,7 @@ class RoundedImageLabel(QLabel):
         return out
 
 class MaterialOrchestrator(QThread):
-    """
-    负责后台静默搜索和更换VJ素材的指挥家线程
-    """
-    trigger_search = pyqtSignal(str, str) # kw, channel
+    trigger_search = pyqtSignal(str, str) 
     
     def __init__(self, parent_controller):
         super().__init__()
@@ -1688,6 +1536,29 @@ class ControlCenter(QMainWindow):
         self.orchestrator = MaterialOrchestrator(self)
         self.orchestrator.start()
 
+    def browse_vdj_path(self):
+        path = QFileDialog.getExistingDirectory(self, "选择 VirtualDJ 目录", self.ipt_path.text())
+        if path: 
+            self.ipt_path.setText(path)
+
+    def apply_vdj_settings(self):
+        APP_CONFIG["vdj_port"] = self.ipt_port.text().strip()
+        APP_CONFIG["vdj_path"] = self.ipt_path.text().strip()
+        save_config()
+        
+        if hasattr(self, 'vdj_watcher') and self.vdj_watcher.isRunning():
+            self.vdj_watcher.running = False
+            self.vdj_watcher.quit() 
+            QTimer.singleShot(500, self.start_vdj_monitor)
+        else:
+            self.start_vdj_monitor()
+        
+        if hasattr(self, 'vdj_poller'):
+            self.vdj_poller.network_ok = False
+            
+        self.log(f"🔄 核心引擎配置已更新！新端口: {APP_CONFIG['vdj_port']}, 新路径: {APP_CONFIG['vdj_path']}")
+        QMessageBox.information(self, "配置已应用", f"端口已切换为 {APP_CONFIG['vdj_port']}\n路径已切换为:\n{APP_CONFIG['vdj_path']}\n\n系统正在后台尝试重新握手...")
+
     def _start_proxy_server(self):
         try:
             server = ThreadedHTTPServer(("127.0.0.1", PROXY_PORT), MultiChannelProxy)
@@ -1697,7 +1568,7 @@ class ControlCenter(QMainWindow):
     def check_vdj_network(self):
         self.log("📡 检测本地虚拟音频节点状态...")
         try:
-            r = requests.get("http://127.0.0.1:80/query?script=get_clock", timeout=1.0)
+            r = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=get_clock", timeout=1.0)
             if r.status_code == 200:
                 self.log("✅ 音频节点握手成功！")
                 if hasattr(self, 'vdj_poller'): self.vdj_poller.network_ok = True
@@ -1732,7 +1603,8 @@ class ControlCenter(QMainWindow):
 
             if getattr(self.obs_window, 'needs_initial_sync', False):
                 if vid_duration <= 0:
-                    if my_state: p_main.pause()
+                    if is_playing and not my_state: p_main.play()
+                    elif not is_playing and my_state: p_main.pause()
                     return 
 
             if not self.bpm_locked and orig_bpm > 0:
@@ -1756,11 +1628,13 @@ class ControlCenter(QMainWindow):
 
             if is_background_mode:
                 if abs(current_rate - 1.0) > 0.01: p_main.setPlaybackRate(1.0)
+                
                 if getattr(self.obs_window, 'needs_initial_sync', False):
                     self.obs_window.needs_initial_sync = False
                     if is_playing: p_main.play()
                     else: p_main.pause()
                     return
+                
                 if is_playing and not my_state: p_main.play()
                 elif not is_playing and my_state: p_main.pause()
                 
@@ -1879,7 +1753,6 @@ class ControlCenter(QMainWindow):
         hl1 = QHBoxLayout(); hl1.addWidget(self.btn_auto); hl1.addWidget(self.btn_semi); hl1.addStretch()
         mode_l.addLayout(hl1)
 
-        # ======= 【新增】：算法引擎四种模式选择 =======
         algo_layout = QHBoxLayout()
         self.algo_group = QButtonGroup(self)
         
@@ -1888,7 +1761,7 @@ class ControlCenter(QMainWindow):
         
         self.rb_mode2 = QRadioButton("2:智能均衡")
         self.rb_mode2.setStyleSheet("color: #00F0FF;")
-        self.rb_mode2.setChecked(True) # 默认
+        self.rb_mode2.setChecked(True)
         
         self.rb_mode3 = QRadioButton("3:冷门文本")
         self.rb_mode3.setStyleSheet("color: #FF0055;")
@@ -1907,7 +1780,6 @@ class ControlCenter(QMainWindow):
         algo_layout.addWidget(self.rb_mode4)
         algo_layout.addStretch()
         mode_l.addLayout(algo_layout)
-        # ==========================================
         
         self.cb_sync = QCheckBox("开启极致物理映射同步"); self.cb_sync.setChecked(True)
         self.ipt_threshold = QLineEdit("40"); self.ipt_threshold.setFixedWidth(50)
@@ -1924,12 +1796,31 @@ class ControlCenter(QMainWindow):
         hl3.addWidget(self.ipt); hl3.addWidget(btn_grab); hl3.addWidget(btn_show)
         mode_l.addLayout(hl3)
         left_panel.addWidget(mode_frame)
+        
+        conn_group = QGroupBox("VDJ CONNECTION (底层连接设置)")
+        conn_l = QHBoxLayout(conn_group)
+        
+        self.ipt_port = QLineEdit(str(APP_CONFIG["vdj_port"]))
+        self.ipt_port.setFixedWidth(50)
+        self.ipt_path = QLineEdit(APP_CONFIG["vdj_path"])
+        
+        btn_browse = QPushButton("📁 浏览")
+        btn_apply = QPushButton("✅ 应用并重连")
+        
+        conn_l.addWidget(QLabel("端口:"))
+        conn_l.addWidget(self.ipt_port)
+        conn_l.addWidget(QLabel("M3U历史路径:"))
+        conn_l.addWidget(self.ipt_path)
+        conn_l.addWidget(btn_browse)
+        conn_l.addWidget(btn_apply)
+        left_panel.addWidget(conn_group)
+        
+        btn_browse.clicked.connect(self.browse_vdj_path)
+        btn_apply.clicked.connect(self.apply_vdj_settings)
         left_panel.addStretch()
         
-        # ==================== RIGHT PANEL: PRO VJ FX RACK ====================
         tabs = QTabWidget()
         
-        # TAB 1: Engine Settings
         tab_engine = QWidget()
         eng_l = QVBoxLayout(tab_engine)
         self.cb_vj_mode1 = QCheckBox("本地图层库: 自动检索 VJ Materials 叠加"); self.cb_vj_mode1.setChecked(True)
@@ -1941,7 +1832,6 @@ class ControlCenter(QMainWindow):
         eng_l.addStretch()
         tabs.addTab(tab_engine, "🛠 SYSTEM MATRIX")
 
-        # TAB 2: Visual FX Rack
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         tab_fx = QWidget()
@@ -1969,15 +1859,13 @@ class ControlCenter(QMainWindow):
         grp_txt = QGroupBox("CYBER HUD & TYPOGRAPHY (全息排版)")
         gl_txt = QGridLayout(grp_txt)
         self.cb_fx_text = QCheckBox("歌曲状态赛博仪表盘 (Cyberpunk HUD)"); self.cb_fx_text.setChecked(True)
-        # [修改]：新增一个控制 Mixer 状态条的开关
         self.cb_fx_mixer_hud = QCheckBox("硬件混音台状态监测 (VOL/LOOP/FX)"); self.cb_fx_mixer_hud.setChecked(True)
         gl_txt.addWidget(self.cb_fx_text, 0, 0)
-        gl_txt.addWidget(self.cb_fx_mixer_hud, 1, 0) # <--- 【补上这句】把它添加到第二行
+        gl_txt.addWidget(self.cb_fx_mixer_hud, 1, 0) 
         fx_l.addWidget(grp_txt)
 
         grp_mix = QGroupBox("HARDWARE MIXER (图层透明度调音台)")
         gl_mix = QVBoxLayout(grp_mix)
-        # --- 新增的开关按钮 ---
         btn_layout = QHBoxLayout()
         self.btn_toggle_vj1 = QPushButton("🟢 VJ1 (背景层) ON")
         self.btn_toggle_vj1.setCheckable(True)
@@ -1992,7 +1880,6 @@ class ControlCenter(QMainWindow):
         btn_layout.addWidget(self.btn_toggle_vj1)
         btn_layout.addWidget(self.btn_toggle_vj2)
         gl_mix.addLayout(btn_layout)
-        # ---------------------
         op1_l = QHBoxLayout()
         self.sld_op_vj1 = QSlider(Qt.Orientation.Horizontal); self.sld_op_vj1.setRange(0, 100); self.sld_op_vj1.setValue(60)
         op1_l.addWidget(QLabel("VJ1 (氛围层) 基准明度:")); op1_l.addWidget(self.sld_op_vj1)
@@ -2002,7 +1889,6 @@ class ControlCenter(QMainWindow):
         gl_mix.addLayout(op1_l); gl_mix.addLayout(op2_l)
         fx_l.addWidget(grp_mix)
 
-        # Bind all to push config
         for cb in [self.cb_fx_text, self.cb_fx_shake, self.cb_fx_flash, self.cb_fx_reactive, 
                    self.cb_fx_mirror, self.cb_fx_rotate, self.cb_fx_hue, self.cb_fx_glitch]:
             cb.stateChanged.connect(self._push_vj_config)
@@ -2024,7 +1910,6 @@ class ControlCenter(QMainWindow):
         self.btn_stop.clicked.connect(self.obs_window.blackout)
 
     def trigger_auto_vj_swap(self, genre, vibe, update_vj1=True, update_vj2=True):
-        """核心切片机制：根据乐段和风格后台切换素材，实现无缝对接"""
         if not self.cb_vj_mode3.isChecked(): return
 
         pro_vj1_kws = ["4K VJ 循环 视觉 素材", "舞台 动态 抽象 背景", "无缝 循环 几何 视觉"]
@@ -2051,13 +1936,11 @@ class ControlCenter(QMainWindow):
 
         filter_suffix = " 素材 "
         
-        # 【修改点】：独立判断是否需要更新 VJ1
         if update_vj1:
             kw1 = random.choice(pro_vj1_kws) + filter_suffix
             self.log(f"☁️ [云端填补] 注入VJ1底层背景指令: <span style='color:#FF0055'>{kw1}</span>")
             self.start_process(kw1, TaskMode.AUTO, task_type="vj1_B" if self.obs_window.active_vj1_deck=="A" else "vj1_A")
 
-        # 【修改点】：独立判断是否需要更新 VJ2
         if update_vj2 and self.cb_vj_trilayer.isChecked():
             kw2 = random.choice(pro_vj2_kws) + filter_suffix
             self.log(f"☁️ [云端填补] 注入VJ2粒子特效指令: <span style='color:#00F0FF'>{kw2}</span>")
@@ -2068,7 +1951,7 @@ class ControlCenter(QMainWindow):
         self.obs_window.vj_config = {
             'auto_fx': auto_fx,
             'fx_text': self.cb_fx_text.isChecked() if auto_fx else False,
-            'fx_mixer_hud': self.cb_fx_mixer_hud.isChecked() if auto_fx else False, # 新增配置项
+            'fx_mixer_hud': self.cb_fx_mixer_hud.isChecked() if auto_fx else False,
             'fx_shake': self.cb_fx_shake.isChecked() if auto_fx else False,
             'fx_flash': self.cb_fx_flash.isChecked() if auto_fx else False,
             'fx_reactive': self.cb_fx_reactive.isChecked() if auto_fx else False,
@@ -2076,7 +1959,6 @@ class ControlCenter(QMainWindow):
             'fx_rotate': self.cb_fx_rotate.isChecked() if auto_fx else False,
             'fx_hue': self.cb_fx_hue.isChecked() if auto_fx else False,
             'fx_glitch': self.cb_fx_glitch.isChecked() if auto_fx else False,
-            # 这里增加了按钮状态判定
             'op_vj1': (self.sld_op_vj1.value() / 100.0) if self.btn_toggle_vj1.isChecked() else 0.0,
             'op_vj2': (self.sld_op_vj2.value() / 100.0) if self.btn_toggle_vj2.isChecked() else 0.0
         }
@@ -2111,7 +1993,7 @@ class ControlCenter(QMainWindow):
 
         if self.bpm_locked and getattr(self.vdj_poller, 'network_ok', False):
             cmd = f"deck%20active%20pitch%20{new_bpm}%20bpm"
-            try: threading.Thread(target=lambda: requests.get(f"http://127.0.0.1:80/execute?script={cmd}", timeout=0.2), daemon=True).start()
+            try: threading.Thread(target=lambda: requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/execute?script={cmd}", timeout=0.2), daemon=True).start()
             except Exception: pass
 
     def sync_progress(self, p):
@@ -2145,11 +2027,14 @@ class ControlCenter(QMainWindow):
         self.log_area.verticalScrollBar().setValue(self.log_area.verticalScrollBar().maximum())
         
     def start_vdj_monitor(self):
-        if os.path.exists(DEFAULT_VDJ_PATH):
-            self.vdj_watcher = VDJWatcher(DEFAULT_VDJ_PATH)
+        path = APP_CONFIG["vdj_path"]
+        if os.path.exists(path):
+            self.vdj_watcher = VDJWatcher(path)
             self.vdj_watcher.track_changed.connect(self.on_track_changed)
             self.vdj_watcher.start()
             self.log("✅ 物理磁盘队列侦听已装载。")
+        else:
+            self.log(f"⚠️ 未找到目录: {path}，切歌侦听失败！")
             
     def on_manual_click(self, url):
         if self.is_main_processing: return
@@ -2160,12 +2045,12 @@ class ControlCenter(QMainWindow):
         self.log(f"<br/>🎵 [VDJ 切歌解析触发]: <b>{t}</b>")
         raw_filename, song_name, search_query, first_artist = t, t, t, ""
         target_deck = None
-        local_filepath = "" # 新增：用于记录本地文件路径
+        local_filepath = "" 
         
         if getattr(self.vdj_poller, 'network_ok', False):
             for d in range(1, 5):
                 try:
-                    r_file = requests.get(f"http://127.0.0.1:80/query?script=deck%20{d}%20get_filepath", timeout=0.2)
+                    r_file = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{d}%20get_filepath", timeout=0.2)
                     if r_file.status_code == 200:
                         filepath = r_file.text.strip().replace('"', '').replace("'", "")
                         if filepath and t.lower() in filepath.lower():
@@ -2175,11 +2060,11 @@ class ControlCenter(QMainWindow):
             if target_deck:
                 try:
                     title, artist = "", ""
-                    r_title = requests.get(f"http://127.0.0.1:80/query?script=deck%20{target_deck}%20get_title", timeout=0.2)
+                    r_title = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{target_deck}%20get_title", timeout=0.2)
                     if r_title.status_code == 200:
                         val = r_title.text.strip().replace('"', '').replace("'", "")
                         if val and val.lower() != "error" and val != "0": title = val
-                    r_artist = requests.get(f"http://127.0.0.1:80/query?script=deck%20{target_deck}%20get_artist", timeout=0.2)
+                    r_artist = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{target_deck}%20get_artist", timeout=0.2)
                     if r_artist.status_code == 200:
                         val = r_artist.text.strip().replace('"', '').replace("'", "")
                         if val and val.lower() != "error" and val != "0": artist = val
@@ -2191,23 +2076,20 @@ class ControlCenter(QMainWindow):
                         else: search_query = song_name
                         self.log(f"💿 成功嗅探 ID3 元数据: [{song_name}] - [{first_artist}]")
                 except: pass
-        # ======== 【新增】：提取本地音频原生封面 ========
+                
                 if local_filepath and os.path.exists(local_filepath):
                     try:
                         import mutagen
                         audio_meta = mutagen.File(local_filepath)
                         cover_bytes = None
                         if audio_meta is not None:
-                            # 1. 尝试解析 ID3 (MP3)
                             if hasattr(audio_meta, 'tags') and audio_meta.tags:
                                 for tag in audio_meta.tags.values():
                                     if tag.__class__.__name__ == 'APIC':
                                         cover_bytes = tag.data
                                         break
-                            # 2. 尝试解析 FLAC
                             if not cover_bytes and hasattr(audio_meta, 'pictures') and audio_meta.pictures:
                                 cover_bytes = audio_meta.pictures[0].data
-                            # 3. 尝试解析 M4A/MP4
                             if not cover_bytes and 'covr' in audio_meta:
                                 cover_bytes = bytes(audio_meta['covr'][0])
                         
@@ -2223,7 +2105,7 @@ class ControlCenter(QMainWindow):
                         self.log("⚠️ 缺少 mutagen 库，无法提取封面，请执行 pip install mutagen")
                     except Exception as e:
                         self.log(f"⚠️ 封面提取失败: {e}")
-                # ================================================           
+                        
         if search_query == t and " - " in t:
             parts = t.split(" - ", 1)
             p1, p2 = parts[0].strip(), parts[1].strip()
@@ -2234,13 +2116,11 @@ class ControlCenter(QMainWindow):
             
         vj_manager.update_song_info(song_name, first_artist, target_deck or "active")
 
-# ====== 智能高级 VJ 层分配系统 ======
         vj1_assigned = False
         vj2_assigned = False
         valid_exts = {".mp4", ".webm", ".avi", ".png", ".gif"}
 
         if self.cb_vj_mode1.isChecked():
-            # ---- 【图层 VJ1】专属：底层氛围背景 ----
             if os.path.exists(VJ1_MATERIAL_DIR):
                 files_vj1 = glob.glob(os.path.join(VJ1_MATERIAL_DIR, "*.*"))
                 cands_vj1 = [f for f in files_vj1 if os.path.splitext(f)[1].lower() in valid_exts]
@@ -2251,7 +2131,6 @@ class ControlCenter(QMainWindow):
                     self.log(f"✨ [VJ1] 挂载本地底层背景: {os.path.basename(chosen1)}")
                     vj1_assigned = True
 
-            # ---- 【图层 VJ2】专属：前景粒子特效 ----
             if self.cb_vj_trilayer.isChecked() and os.path.exists(VJ2_MATERIAL_DIR):
                 files_vj2 = glob.glob(os.path.join(VJ2_MATERIAL_DIR, "*.*"))
                 cands_vj2 = [f for f in files_vj2 if os.path.splitext(f)[1].lower() in valid_exts]
@@ -2262,17 +2141,13 @@ class ControlCenter(QMainWindow):
                     self.log(f"✨ [VJ2] 挂载本地粒子特效: {os.path.basename(chosen2)}")
                     vj2_assigned = True
 
-        # ======== 【新增的独立云端兜底逻辑】 ========
-        # 只要开启了云端模式，且 VJ1 或 VJ2 任意一个没有在本地找到素材（或者你关了本地模式）
         if self.cb_vj_mode3.isChecked() and (not vj1_assigned or (self.cb_vj_trilayer.isChecked() and not vj2_assigned)):
             genre = vj_manager.get_state().get('genre', MusicGenre.UNKNOWN)
             self.log("☁️ 检测到图层空缺，呼叫云端引擎进行独立填补...")
-            # 这里的巧妙之处：缺哪个图层，update_vjX 就等于 True，云端就只去抓取缺失的那个！
             self.trigger_auto_vj_swap(genre, EnergyVibe.ACTIVE, update_vj1=not vj1_assigned, update_vj2=not vj2_assigned)
 
-        # ======== 【主视频层搜索】 ========
         if not search_query:
-            search_query = song_name # 兜底策略
+            search_query = song_name
 
         if search_query:
             self.log(f"🔍 启动主视窗音画同步检索指令: <span style='color:#FF0055'>{search_query}</span>")
@@ -2306,16 +2181,12 @@ class ControlCenter(QMainWindow):
             
         has_sync = hasattr(self, 'cb_sync') and self.cb_sync.isChecked() and getattr(self.vdj_poller, 'network_ok', False)
 
-        
-        
-        # ======= 【修改】：获取 UI 的算法模式 =======
         algo_id = 2
         if hasattr(self, 'algo_group') and self.algo_group.checkedId() != -1:
             algo_id = self.algo_group.checkedId()
             
         worker = QThread()
         logic = SearchWorker(q, song_name, raw_filename, mode, has_sync, algo_mode=algo_id, channel=task_type)
-        # =======================================
         logic.moveToThread(worker)
         self.active_workers.append((worker, logic))
         
@@ -2388,7 +2259,9 @@ class VDJWatcher(QThread):
             time.sleep(2)
 
 if __name__ == "__main__":
-    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, False)
+    # [核心修正] 必须开启 OpenGL 上下文共享，允许视频解码帧直接在视口间流动
+    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+    
     app = QApplication(sys.argv)
     app.setStyleSheet(STYLESHEET)
     window = ControlCenter()
