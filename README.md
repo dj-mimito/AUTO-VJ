@@ -1,5 +1,7 @@
 AutoVJ是一款自动VJ的小程序
 
+程序直接使用下载链接：https://github.com/dj-mimito/AUTO-VJ/releases/tag/Formal_Version
+
 \## 需要注意 VDJ25版本以上的，可能需要手动修改下M3U历史路径为C:\Users\(你的电脑用户名)\AppData/Local/VirtualDJ  的目录下，如果80端口被占用的话也要改下端口。改完路径和端口需要重开下软件。
 
 Spout/syphon功能没写好，不会写，有朋友要用的话源代码加上去吧
