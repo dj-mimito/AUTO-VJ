@@ -76,6 +76,21 @@ except ImportError:
     print("CRITICAL ERROR: 缺少核心依赖，请运行: pip install selenium undetected-chromedriver yt-dlp requests PyQt6")
     sys.exit(1)
 
+# --- Spout Support (现代官方免编译版本 + 深度错误追踪) ---
+HAS_SPOUT = False
+SPOUT_ERROR_MSG = ""
+try:
+    import spoutgl
+    # 尝试实例化底层对象，验证 DLL 驱动是否真的能跑通
+    _test_sender = spoutgl.SpoutSender()
+    _test_sender.releaseSender()
+    HAS_SPOUT = True
+    SPOUT_ERROR_MSG = "加载成功"
+except Exception as e:
+    # 这里会捕获如 DLL load failed, ModuleNotFoundError 等所有真实报错
+    HAS_SPOUT = False
+    SPOUT_ERROR_MSG = f"{type(e).__name__}: {str(e)}"
+
 # ============================================================================
 # [打包核心终极修复] 兼容 PyInstaller 6.x+ _internal 文件夹机制
 # ============================================================================
@@ -123,6 +138,7 @@ APP_CONFIG = {
     "show_osd": True,
     "osd_song_opacity": 100,
     "osd_video_opacity": 100,
+    "enable_spout": False,
     "enable_download": True
 }
 if os.path.exists(CONFIG_FILE):
@@ -183,8 +199,7 @@ STYLESHEET = f"""
     QSlider::groove:horizontal {{ border: 1px solid #333; height: 12px; background: #111; border-radius: 6px; }}
     QSlider::handle:horizontal {{ background: {COLOR_ACCENT}; width: 24px; height: 24px; margin: -6px 0; border-radius: 12px; }}
     
-    QSlider::groove:vertical {{ border: 1px solid #333; width: 14px; background: #111; border-radius: 7px; }}
-    QSlider#BPMSlider::handle:vertical {{ background: #E91E63; height: 36px; width: 30px; margin: 0 -8px; border-radius: 18px; }}
+    QSlider#BPMSlider::handle:horizontal {{ background: #E91E63; }}
     
     QRadioButton {{ font-weight: bold; font-size: 13px; }}
     QRadioButton::indicator {{ width: 16px; height: 16px; border-radius: 8px; border: 2px solid #555; background-color: #222; }}
@@ -1218,6 +1233,54 @@ class OBSVideoWindow(QMainWindow):
         self.set_osd_video_opacity(APP_CONFIG.get("osd_video_opacity", 100))
         self.set_osd_visible(APP_CONFIG.get("show_osd", True))
 
+        # --- Spout Output Logic ---
+        self.spout = None
+        self.spout_timer = QTimer(self)
+        self.spout_timer.timeout.connect(self.send_spout_frame)
+        if HAS_SPOUT and APP_CONFIG.get("enable_spout", False):
+            self.init_spout()
+
+    def init_spout(self):
+        if not HAS_SPOUT: return
+        try:
+            if not self.spout:
+                self.spout = spoutgl.SpoutSender()
+                self.spout.setSenderName("BiliVisualPro_Output")
+            self.spout_timer.start(33) # ~30fps
+        except Exception:
+            pass
+
+    def stop_spout(self):
+        self.spout_timer.stop()
+        if self.spout:
+            try:
+                self.spout.releaseSender()
+                self.spout = None
+            except:
+                pass
+
+    def send_spout_frame(self):
+        if not self.spout: return
+        try:
+            # 抓取整个渲染场景（包含视频和OSD）
+            pix = self.view.grab()
+            img = pix.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+            width = self.width()
+            height = self.height()
+            
+            # 适配 spoutgl 0.1.1+ 的内存映射发送方式
+            success = self.spout.sendImage(
+                img.bits().asstring(width * height * 4), 
+                width, 
+                height, 
+                0x1908, # GL_RGBA
+                True,   # Invert (Spout 通常需要反转 Y 轴)
+                0       # Host FBO
+            )
+        except Exception as e:
+            # 防止报错刷屏，静默失败
+            pass
+        
     def set_osd_visible(self, visible):
         self.osd_song.setVisible(visible)
         self.osd_video.setVisible(visible)
@@ -1241,6 +1304,9 @@ class OBSVideoWindow(QMainWindow):
         w, h = self.width(), self.height()
         self.view.setSceneRect(0, 0, w, h)
         self.video_item.setSize(QSizeF(w, h))
+        if self.spout:
+            # 如果窗口大小改变，需要通知 Spout (虽然通常 VJ 窗口是固定的)
+            self.spout.updateSender("BiliVisualPro_Output", w, h)
             
     def loop_handler(self, s):
         if s == QMediaPlayer.MediaStatus.EndOfMedia and self.is_looping:
@@ -1264,6 +1330,7 @@ class OBSVideoWindow(QMainWindow):
         self.player.setSource(QUrl())
 
     def closeEvent(self, event):
+        self.stop_spout()
         super().closeEvent(event)
 
 class RoundedImageLabel(QLabel):
@@ -1343,6 +1410,12 @@ class ControlCenter(QMainWindow):
         self.vdj_poller.network_ok_signal.connect(lambda: self.log("✅ VDJ Network 重新连接成功！深度同步已接管。"))
         self.vdj_poller.network_error_signal.connect(lambda e: self.log(f"⚠️ VDJ Network 连接异常: {e}"))
         self.vdj_poller.start()
+
+        # 启动后立刻在日志中反馈 Spout 状态
+        if not HAS_SPOUT:
+            QTimer.singleShot(1000, lambda: self.log(f"⚠️ <span style='color:orange'>Spout功能暂不可用：{SPOUT_ERROR_MSG}</span>"))
+        else:
+            QTimer.singleShot(1000, lambda: self.log("✅ Spout2 显卡硬件级输出引擎已就绪"))
 
     def browse_vdj_path(self):
         path = QFileDialog.getExistingDirectory(self, "选择 VirtualDJ 目录", self.ipt_path.text())
@@ -1569,23 +1642,45 @@ class ControlCenter(QMainWindow):
         left.addWidget(np)
         
         pg = QGroupBox("Bilibili 专属播控台")
-        pg_l = QHBoxLayout(pg)
+        pg_l = QVBoxLayout(pg)
         pg_l.setContentsMargins(15, 20, 15, 15)
+        pg_l.setSpacing(15)
         
-        left_ctrl = QVBoxLayout()
-        btn_g = QHBoxLayout()
-        btn_g.setSpacing(10)
+        top_ctrl = QHBoxLayout()
+        top_ctrl.setSpacing(10)
+        
         self.btn_play = QPushButton("⏯ 播放 / 暂停", objectName="CtrlBtn")
         self.btn_loop = QPushButton("🔁 循环: 开启", objectName="CtrlBtn")
         self.btn_loop.setCheckable(True)
         self.btn_loop.setChecked(True)
-        self.btn_mute = QPushButton("🔇 静音开关", objectName="CtrlBtn")
-        self.btn_stop = QPushButton("⬛ 物理黑屏", objectName="DangerBtn")
-        btn_g.addWidget(self.btn_play)
-        btn_g.addWidget(self.btn_loop)
-        btn_g.addWidget(self.btn_mute)
-        btn_g.addWidget(self.btn_stop)
-        left_ctrl.addLayout(btn_g)
+        
+        top_ctrl.addWidget(self.btn_play)
+        top_ctrl.addWidget(self.btn_loop)
+        top_ctrl.addSpacing(20)
+        
+        lbl_bpm_title = QLabel("BPM:")
+        lbl_bpm_title.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        lbl_bpm_title.setStyleSheet("font-weight: bold; color: #AAAAAA;")
+        
+        self.lbl_bpm_val = QLabel("0.0")
+        self.lbl_bpm_val.setFixedWidth(60)
+        self.lbl_bpm_val.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.lbl_bpm_val.setStyleSheet("font-family: Consolas; font-weight: bold; font-size: 22px; color: #E91E63;")
+        
+        self.bpm_slider = QSlider(Qt.Orientation.Horizontal)
+        self.bpm_slider.setObjectName("BPMSlider")
+        self.bpm_slider.setRange(0, 3000) 
+        self.bpm_slider.setValue(1200)
+        
+        self.bpm_slider.sliderPressed.connect(self.lock_bpm)
+        self.bpm_slider.sliderReleased.connect(self.release_bpm)
+        self.bpm_slider.valueChanged.connect(self.on_local_bpm_changed)
+        
+        top_ctrl.addWidget(lbl_bpm_title)
+        top_ctrl.addWidget(self.lbl_bpm_val)
+        top_ctrl.addWidget(self.bpm_slider, stretch=1)
+        
+        pg_l.addLayout(top_ctrl)
         
         prog_layout = QHBoxLayout()
         self.slider = QSlider(Qt.Orientation.Horizontal)
@@ -1601,37 +1696,8 @@ class ControlCenter(QMainWindow):
         
         prog_layout.addWidget(self.slider)
         prog_layout.addWidget(self.lbl_time)
-        left_ctrl.addLayout(prog_layout)
         
-        pg_l.addLayout(left_ctrl, stretch=5)
-        
-        right_ctrl = QVBoxLayout()
-        right_ctrl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        
-        lbl_bpm_title = QLabel("BPM")
-        lbl_bpm_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_bpm_title.setStyleSheet("font-weight: bold; color: #AAAAAA;")
-        
-        self.lbl_bpm_val = QLabel("0.0")
-        self.lbl_bpm_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_bpm_val.setStyleSheet("font-family: Consolas; font-weight: bold; font-size: 22px; color: #E91E63;")
-        
-        self.bpm_slider = QSlider(Qt.Orientation.Vertical)
-        self.bpm_slider.setObjectName("BPMSlider")
-        self.bpm_slider.setRange(0, 3000) 
-        self.bpm_slider.setValue(1200)
-        self.bpm_slider.setInvertedAppearance(True) 
-        self.bpm_slider.setMinimumHeight(280) 
-        
-        self.bpm_slider.sliderPressed.connect(self.lock_bpm)
-        self.bpm_slider.sliderReleased.connect(self.release_bpm)
-        self.bpm_slider.valueChanged.connect(self.on_local_bpm_changed)
-        
-        right_ctrl.addWidget(lbl_bpm_title)
-        right_ctrl.addWidget(self.lbl_bpm_val)
-        right_ctrl.addWidget(self.bpm_slider, alignment=Qt.AlignmentFlag.AlignHCenter)
-        pg_l.addLayout(right_ctrl, stretch=1)
-        
+        pg_l.addLayout(prog_layout)
         left.addWidget(pg)
         
         cp = QFrame()
@@ -1716,15 +1782,6 @@ class ControlCenter(QMainWindow):
         sync_layout.addWidget(self.ipt_threshold)
         cp_l.addLayout(sync_layout)
         
-        # 弹出窗口按钮区
-        bottom_layout = QHBoxLayout()
-        self.btn_win = QPushButton("📺 弹出 OBS 窗口")
-        self.btn_win.clicked.connect(self.obs_window.show)
-        
-        bottom_layout.addStretch()
-        bottom_layout.addWidget(self.btn_win)
-        cp_l.addLayout(bottom_layout)
-        
         # OSD 控制区
         osd_op_layout = QVBoxLayout()
         
@@ -1732,12 +1789,20 @@ class ControlCenter(QMainWindow):
         self.cb_osd = QCheckBox("显示 OSD 歌曲信息")
         self.cb_osd.setChecked(APP_CONFIG.get("show_osd", True))
         self.cb_osd.stateChanged.connect(self.toggle_osd)
+        
+        self.cb_spout = QCheckBox("启用 Spout (显卡流) 输出")
+        self.cb_spout.setChecked(APP_CONFIG.get("enable_spout", False))
+        self.cb_spout.setEnabled(HAS_SPOUT)
+        self.cb_spout.stateChanged.connect(self.toggle_spout)
+        if not HAS_SPOUT:
+            self.cb_spout.setToolTip(f"不可用原因: {SPOUT_ERROR_MSG}")
 
         self.cb_download = QCheckBox("启用视频自动下载缓存")
         self.cb_download.setChecked(APP_CONFIG.get("enable_download", True))
         self.cb_download.stateChanged.connect(self.toggle_download)
 
         row1.addWidget(self.cb_osd)
+        row1.addWidget(self.cb_spout)
         row1.addWidget(self.cb_download)
         row1.addStretch()
         osd_op_layout.addLayout(row1)
@@ -1824,8 +1889,6 @@ class ControlCenter(QMainWindow):
         
         self.btn_play.clicked.connect(self.toggle_play)
         self.btn_loop.toggled.connect(self.toggle_loop)
-        self.btn_mute.clicked.connect(self.toggle_mute)
-        self.btn_stop.clicked.connect(self.obs_window.blackout)
 
     def lock_s(self):
         self.slider_locked = True
@@ -1909,14 +1972,21 @@ class ControlCenter(QMainWindow):
         self.obs_window.is_looping = c
         self.btn_loop.setText(f"🔁 循环: {'开启' if c else '禁用'}")
         
-    def toggle_mute(self):
-        v = 0.0 if self.obs_window.audio.volume() > 0.0 else 1.0
-        self.obs_window.audio.setVolume(v)
-        
     def toggle_osd(self, state):
         is_checked = bool(state)
         self.obs_window.set_osd_visible(is_checked)
         APP_CONFIG["show_osd"] = is_checked
+        save_config()
+
+    def toggle_spout(self, state):
+        is_checked = bool(state)
+        APP_CONFIG["enable_spout"] = is_checked
+        if is_checked:
+            self.obs_window.init_spout()
+            self.log("🚀 Spout2 发送器已启动: BiliVisualPro_Output")
+        else:
+            self.obs_window.stop_spout()
+            self.log("🛑 Spout2 发送器已停止")
         save_config()
 
     def toggle_download(self, state):
@@ -2029,7 +2099,7 @@ class ControlCenter(QMainWindow):
         self.log(f"🔍 最终进入B站搜索指令: <b>{search_query}</b>")
         mode = TaskMode.AUTO if self.btn_auto.isChecked() else TaskMode.SEARCH_ONLY
         self.start_process(search_query, mode, song_name=song_name, raw_filename=raw_filename)
-
+        
     def start_process(self, q, mode: TaskMode, song_name="", raw_filename=""):
         if self.is_processing:
             return
