@@ -22,6 +22,7 @@ import random
 import tempfile
 import shutil
 import json
+from PyQt6.QtGui import QIcon
 from enum import Enum
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs, quote
@@ -119,8 +120,8 @@ def get_resource_path(relative_path):
 # [Configuration & Constants]
 # ============================================================================
 
-APP_NAME = "VDJ Bili Visual Pro"
-VERSION = "43.0.3 (No-WDM Clean Package + LazyLoad Fix)"
+APP_NAME = "DJ Mimito AutoVDJ "
+VERSION = "1.0(加入Anirave Q群:921954533)"
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
@@ -1184,6 +1185,9 @@ class OBSVideoWindow(QMainWindow):
         self.setWindowTitle("OBS Bili-Source Render")
         self.resize(1280, 720)
         self.setStyleSheet("background-color: black;")
+        icon_path = get_resource_path("app_icon.png")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
         
         # [核心架构升级] 抛弃普通 QVideoWidget，改用支持层级渲染的图形场景引擎
         self.view = QGraphicsView(self)
@@ -1377,6 +1381,9 @@ class ControlCenter(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{VERSION}")
         self.resize(1100, 850)
+        icon_path = get_resource_path("app_icon.png")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
         self.is_processing = False
         self.slider_locked = False
         self.bpm_locked = False
