@@ -77,6 +77,21 @@ except ImportError:
     print("CRITICAL ERROR: 缺少核心依赖，请运行: pip install selenium undetected-chromedriver yt-dlp requests PyQt6")
     sys.exit(1)
 
+# --- Spout Support (现代官方免编译版本 + 深度错误追踪) ---
+HAS_SPOUT = False
+SPOUT_ERROR_MSG = ""
+try:
+    import spoutgl
+    # 尝试实例化底层对象，验证 DLL 驱动是否真的能跑通
+    _test_sender = spoutgl.SpoutSender()
+    _test_sender.releaseSender()
+    HAS_SPOUT = True
+    SPOUT_ERROR_MSG = "加载成功"
+except Exception as e:
+    # 这里会捕获如 DLL load failed, ModuleNotFoundError 等所有真实报错
+    HAS_SPOUT = False
+    SPOUT_ERROR_MSG = f"{type(e).__name__}: {str(e)}"
+
 # ============================================================================
 # [打包核心终极修复] 兼容 PyInstaller 6.x+ _internal 文件夹机制
 # ============================================================================
@@ -124,10 +139,12 @@ APP_CONFIG = {
     "show_osd": True,
     "osd_song_opacity": 100,
     "osd_video_opacity": 100,
+    "enable_spout": False,
     "enable_download": True,
     "extra_search_keyword": "",
     "only_search_title": False,
-    "only_search_artist": False
+    "only_search_artist": False,
+    "pure_keyword_mode": False  # [新增] 纯关键词模式
 }
 if os.path.exists(CONFIG_FILE):
     try:
@@ -788,6 +805,10 @@ class SearchWorker(QObject):
                     driver.get(f"https://search.bilibili.com/all?keyword={quote(self.query)}")
                     result_data["is_search_only"] = True
                     result_data["success"] = True
+                    # ===== [修复半自动模式不推送时长的问题] =====
+                    if target_duration > 0:
+                        self.update_ui.emit({"target_duration": target_duration})
+                    # ==========================================
                     self.finished.emit(result_data)
                     return
                 elif self.mode == TaskMode.GRAB_CURRENT:
@@ -1728,14 +1749,19 @@ class ControlCenter(QMainWindow):
         self.cb_only_artist.setChecked(APP_CONFIG.get("only_search_artist", False))
         self.cb_only_artist.stateChanged.connect(self.save_extra_keyword)
         
+        self.cb_pure_keyword = QCheckBox("纯关键词模式")
+        self.cb_pure_keyword.setChecked(APP_CONFIG.get("pure_keyword_mode", False))
+        self.cb_pure_keyword.stateChanged.connect(self.save_extra_keyword)
+        
         lbl_kw = QLabel("附加限定搜索词:")
         lbl_kw.setStyleSheet("font-weight: bold; color: #AAAAAA;")
         self.ipt_extra_keyword = QLineEdit(APP_CONFIG.get("extra_search_keyword", ""))
-        self.ipt_extra_keyword.setPlaceholderText("例如输入 MV、Live现场、官方...")
+        self.ipt_extra_keyword.setPlaceholderText("例如输入: 音MAD、Live、静止画，MV等")
         self.ipt_extra_keyword.editingFinished.connect(self.save_extra_keyword)
         
         kw_layout.addWidget(self.cb_only_title)
         kw_layout.addWidget(self.cb_only_artist)
+        kw_layout.addWidget(self.cb_pure_keyword)
         kw_layout.addWidget(lbl_kw)
         kw_layout.addWidget(self.ipt_extra_keyword)
         cp_l.addLayout(kw_layout)
@@ -1864,6 +1890,7 @@ class ControlCenter(QMainWindow):
         APP_CONFIG["extra_search_keyword"] = self.ipt_extra_keyword.text().strip()
         APP_CONFIG["only_search_title"] = self.cb_only_title.isChecked()
         APP_CONFIG["only_search_artist"] = self.cb_only_artist.isChecked()
+        APP_CONFIG["pure_keyword_mode"] = self.cb_pure_keyword.isChecked()
         save_config()
 
     def lock_s(self):
@@ -2064,23 +2091,27 @@ class ControlCenter(QMainWindow):
         # --- 搜索范围与附加关键词拼接逻辑 ---
         only_title = self.cb_only_title.isChecked()
         only_artist = self.cb_only_artist.isChecked()
-        
-        if only_title and not only_artist:
-            search_query = song_name
-        elif only_artist and not only_title:
-            search_query = first_artist if first_artist else song_name
-        else:
-            search_query = f"{song_name} {first_artist}" if first_artist else song_name
-
+        pure_keyword = self.cb_pure_keyword.isChecked()
         extra_kw = self.ipt_extra_keyword.text().strip()
-        if extra_kw:
-            search_query = f"{search_query} {extra_kw}"
+        
+        if pure_keyword and extra_kw:
+            search_query = extra_kw
+        else:
+            if only_title and not only_artist:
+                search_query = song_name
+            elif only_artist and not only_title:
+                search_query = first_artist if first_artist else song_name
+            else:
+                search_query = f"{song_name} {first_artist}" if first_artist else song_name
+
+            if extra_kw:
+                search_query = f"{search_query} {extra_kw}"
         # --------------------------
 
         self.log(f"🔍 最终进入B站搜索指令: <b>{search_query}</b>")
         mode = TaskMode.AUTO if self.btn_auto.isChecked() else TaskMode.SEARCH_ONLY
         self.start_process(search_query, mode, song_name=song_name, raw_filename=raw_filename)
-        
+
     def start_process(self, q, mode: TaskMode, song_name="", raw_filename=""):
         if self.is_processing:
             return
