@@ -77,21 +77,6 @@ except ImportError:
     print("CRITICAL ERROR: 缺少核心依赖，请运行: pip install selenium undetected-chromedriver yt-dlp requests PyQt6")
     sys.exit(1)
 
-# --- Spout Support (现代官方免编译版本 + 深度错误追踪) ---
-HAS_SPOUT = False
-SPOUT_ERROR_MSG = ""
-try:
-    import spoutgl
-    # 尝试实例化底层对象，验证 DLL 驱动是否真的能跑通
-    _test_sender = spoutgl.SpoutSender()
-    _test_sender.releaseSender()
-    HAS_SPOUT = True
-    SPOUT_ERROR_MSG = "加载成功"
-except Exception as e:
-    # 这里会捕获如 DLL load failed, ModuleNotFoundError 等所有真实报错
-    HAS_SPOUT = False
-    SPOUT_ERROR_MSG = f"{type(e).__name__}: {str(e)}"
-
 # ============================================================================
 # [打包核心终极修复] 兼容 PyInstaller 6.x+ _internal 文件夹机制
 # ============================================================================
@@ -139,8 +124,10 @@ APP_CONFIG = {
     "show_osd": True,
     "osd_song_opacity": 100,
     "osd_video_opacity": 100,
-    "enable_spout": False,
-    "enable_download": True
+    "enable_download": True,
+    "extra_search_keyword": "",
+    "only_search_title": False,
+    "only_search_artist": False
 }
 if os.path.exists(CONFIG_FILE):
     try:
@@ -657,7 +644,7 @@ class SearchWorker(QObject):
         self.raw_filename = raw_filename  
         self.mode = mode
         self.use_vdj_sync = use_vdj_sync
-        self.algo_mode = algo_mode # 1:精准 2:智能均衡 3:语义优先 4:时长优先
+        self.algo_mode = algo_mode # 1:精准 2:智能均衡 3:语义优先 4:时长优先 5:完全匹配
         self.enable_download = enable_download
 
     def run(self):
@@ -894,7 +881,7 @@ class SearchWorker(QObject):
                 # =========================================================
                 # 【终极匹配算法】 - 文本与时间的基础特征分析
                 # =========================================================
-                clean_song_str = clean_text_for_match(self.song_name)
+                clean_song_str = clean_text_for_match(self.query)
                 song_words = set(clean_song_str.split())
                 max_views = max((c['views'] for c in found_candidates), default=1)
                 
@@ -966,6 +953,16 @@ class SearchWorker(QObject):
                     ))
                     best_candidate = found_candidates[0]
                     self.log.emit(f"⏱️ [模式4-时长优先] 选中目标！时长误差最小化: {best_candidate['time_diff']}秒 (附带文本: {best_candidate['text_score']:.2f})")
+
+                elif self.algo_mode == 5:
+                    # 模式5：完全文本匹配 (强行文本匹配度最大化 -> 其次时长误差 -> 最后看播放量)
+                    found_candidates.sort(key=lambda x: (
+                        -x['text_score'], 
+                        x['time_diff'], 
+                        -x['views']
+                    ))
+                    best_candidate = found_candidates[0]
+                    self.log.emit(f"📝 [模式5-完全文本匹配] 选中目标！完全遵循文本关键词最优: {best_candidate['text_score']:.2f} (时长误差: {best_candidate['time_diff']}秒)")
 
                 # =========================================================
                 # 终极抗死锁兜底
@@ -1237,54 +1234,6 @@ class OBSVideoWindow(QMainWindow):
         self.set_osd_video_opacity(APP_CONFIG.get("osd_video_opacity", 100))
         self.set_osd_visible(APP_CONFIG.get("show_osd", True))
 
-        # --- Spout Output Logic ---
-        self.spout = None
-        self.spout_timer = QTimer(self)
-        self.spout_timer.timeout.connect(self.send_spout_frame)
-        if HAS_SPOUT and APP_CONFIG.get("enable_spout", False):
-            self.init_spout()
-
-    def init_spout(self):
-        if not HAS_SPOUT: return
-        try:
-            if not self.spout:
-                self.spout = spoutgl.SpoutSender()
-                self.spout.setSenderName("BiliVisualPro_Output")
-            self.spout_timer.start(33) # ~30fps
-        except Exception:
-            pass
-
-    def stop_spout(self):
-        self.spout_timer.stop()
-        if self.spout:
-            try:
-                self.spout.releaseSender()
-                self.spout = None
-            except:
-                pass
-
-    def send_spout_frame(self):
-        if not self.spout: return
-        try:
-            # 抓取整个渲染场景（包含视频和OSD）
-            pix = self.view.grab()
-            img = pix.toImage().convertToFormat(QImage.Format.Format_RGBA8888)
-            width = self.width()
-            height = self.height()
-            
-            # 适配 spoutgl 0.1.1+ 的内存映射发送方式
-            success = self.spout.sendImage(
-                img.bits().asstring(width * height * 4), 
-                width, 
-                height, 
-                0x1908, # GL_RGBA
-                True,   # Invert (Spout 通常需要反转 Y 轴)
-                0       # Host FBO
-            )
-        except Exception as e:
-            # 防止报错刷屏，静默失败
-            pass
-        
     def set_osd_visible(self, visible):
         self.osd_song.setVisible(visible)
         self.osd_video.setVisible(visible)
@@ -1308,9 +1257,6 @@ class OBSVideoWindow(QMainWindow):
         w, h = self.width(), self.height()
         self.view.setSceneRect(0, 0, w, h)
         self.video_item.setSize(QSizeF(w, h))
-        if self.spout:
-            # 如果窗口大小改变，需要通知 Spout (虽然通常 VJ 窗口是固定的)
-            self.spout.updateSender("BiliVisualPro_Output", w, h)
             
     def loop_handler(self, s):
         if s == QMediaPlayer.MediaStatus.EndOfMedia and self.is_looping:
@@ -1334,7 +1280,6 @@ class OBSVideoWindow(QMainWindow):
         self.player.setSource(QUrl())
 
     def closeEvent(self, event):
-        self.stop_spout()
         super().closeEvent(event)
 
 class RoundedImageLabel(QLabel):
@@ -1417,12 +1362,6 @@ class ControlCenter(QMainWindow):
         self.vdj_poller.network_ok_signal.connect(lambda: self.log("✅ VDJ Network 重新连接成功！深度同步已接管。"))
         self.vdj_poller.network_error_signal.connect(lambda e: self.log(f"⚠️ VDJ Network 连接异常: {e}"))
         self.vdj_poller.start()
-
-        # 启动后立刻在日志中反馈 Spout 状态
-        if not HAS_SPOUT:
-            QTimer.singleShot(1000, lambda: self.log(f"⚠️ <span style='color:orange'>Spout功能暂不可用：{SPOUT_ERROR_MSG}</span>"))
-        else:
-            QTimer.singleShot(1000, lambda: self.log("✅ Spout2 显卡硬件级输出引擎已就绪"))
 
     def browse_vdj_path(self):
         path = QFileDialog.getExistingDirectory(self, "选择 VirtualDJ 目录", self.ipt_path.text())
@@ -1745,15 +1684,20 @@ class ControlCenter(QMainWindow):
         self.rb_mode4 = QRadioButton("4:时长优先 (Alt+4)")
         self.rb_mode4.setStyleSheet("color: #FF9800;")
         
+        self.rb_mode5 = QRadioButton("5:完全文本匹配 (Alt+5)")
+        self.rb_mode5.setStyleSheet("color: #E91E63;")
+        
         self.algo_group.addButton(self.rb_mode1, 1)
         self.algo_group.addButton(self.rb_mode2, 2)
         self.algo_group.addButton(self.rb_mode3, 3)
         self.algo_group.addButton(self.rb_mode4, 4)
+        self.algo_group.addButton(self.rb_mode5, 5)
         
         row2_layout.addWidget(self.rb_mode1)
         row2_layout.addWidget(self.rb_mode2)
         row2_layout.addWidget(self.rb_mode3)
         row2_layout.addWidget(self.rb_mode4)
+        row2_layout.addWidget(self.rb_mode5)
         row2_layout.addStretch()
         cp_l.addLayout(row2_layout)
         
@@ -1769,6 +1713,33 @@ class ControlCenter(QMainWindow):
         
         self.shortcut_mode4 = QShortcut(QKeySequence("Alt+4"), self)
         self.shortcut_mode4.activated.connect(self.rb_mode4.click)
+        
+        self.shortcut_mode5 = QShortcut(QKeySequence("Alt+5"), self)
+        self.shortcut_mode5.activated.connect(self.rb_mode5.click)
+        
+        # --- 附加关键词输入框 ---
+        kw_layout = QHBoxLayout()
+        
+        self.cb_only_title = QCheckBox("仅搜歌名")
+        self.cb_only_title.setChecked(APP_CONFIG.get("only_search_title", False))
+        self.cb_only_title.stateChanged.connect(self.save_extra_keyword)
+        
+        self.cb_only_artist = QCheckBox("仅搜歌手")
+        self.cb_only_artist.setChecked(APP_CONFIG.get("only_search_artist", False))
+        self.cb_only_artist.stateChanged.connect(self.save_extra_keyword)
+        
+        lbl_kw = QLabel("附加限定搜索词:")
+        lbl_kw.setStyleSheet("font-weight: bold; color: #AAAAAA;")
+        self.ipt_extra_keyword = QLineEdit(APP_CONFIG.get("extra_search_keyword", ""))
+        self.ipt_extra_keyword.setPlaceholderText("例如输入 MV、Live现场、官方...")
+        self.ipt_extra_keyword.editingFinished.connect(self.save_extra_keyword)
+        
+        kw_layout.addWidget(self.cb_only_title)
+        kw_layout.addWidget(self.cb_only_artist)
+        kw_layout.addWidget(lbl_kw)
+        kw_layout.addWidget(self.ipt_extra_keyword)
+        cp_l.addLayout(kw_layout)
+        # ------------------------
         
         # 同步机制底层配置
         sync_layout = QHBoxLayout()
@@ -1797,19 +1768,11 @@ class ControlCenter(QMainWindow):
         self.cb_osd.setChecked(APP_CONFIG.get("show_osd", True))
         self.cb_osd.stateChanged.connect(self.toggle_osd)
         
-        self.cb_spout = QCheckBox("启用 Spout (显卡流) 输出")
-        self.cb_spout.setChecked(APP_CONFIG.get("enable_spout", False))
-        self.cb_spout.setEnabled(HAS_SPOUT)
-        self.cb_spout.stateChanged.connect(self.toggle_spout)
-        if not HAS_SPOUT:
-            self.cb_spout.setToolTip(f"不可用原因: {SPOUT_ERROR_MSG}")
-
         self.cb_download = QCheckBox("启用视频自动下载缓存")
         self.cb_download.setChecked(APP_CONFIG.get("enable_download", True))
         self.cb_download.stateChanged.connect(self.toggle_download)
 
         row1.addWidget(self.cb_osd)
-        row1.addWidget(self.cb_spout)
         row1.addWidget(self.cb_download)
         row1.addStretch()
         osd_op_layout.addLayout(row1)
@@ -1897,6 +1860,12 @@ class ControlCenter(QMainWindow):
         self.btn_play.clicked.connect(self.toggle_play)
         self.btn_loop.toggled.connect(self.toggle_loop)
 
+    def save_extra_keyword(self):
+        APP_CONFIG["extra_search_keyword"] = self.ipt_extra_keyword.text().strip()
+        APP_CONFIG["only_search_title"] = self.cb_only_title.isChecked()
+        APP_CONFIG["only_search_artist"] = self.cb_only_artist.isChecked()
+        save_config()
+
     def lock_s(self):
         self.slider_locked = True
         
@@ -1983,17 +1952,6 @@ class ControlCenter(QMainWindow):
         is_checked = bool(state)
         self.obs_window.set_osd_visible(is_checked)
         APP_CONFIG["show_osd"] = is_checked
-        save_config()
-
-    def toggle_spout(self, state):
-        is_checked = bool(state)
-        APP_CONFIG["enable_spout"] = is_checked
-        if is_checked:
-            self.obs_window.init_spout()
-            self.log("🚀 Spout2 发送器已启动: BiliVisualPro_Output")
-        else:
-            self.obs_window.stop_spout()
-            self.log("🛑 Spout2 发送器已停止")
         save_config()
 
     def toggle_download(self, state):
@@ -2103,6 +2061,22 @@ class ControlCenter(QMainWindow):
             display_song = f"歌曲：{song_name}"
         self.obs_window.update_osd(song_text=display_song)
             
+        # --- 搜索范围与附加关键词拼接逻辑 ---
+        only_title = self.cb_only_title.isChecked()
+        only_artist = self.cb_only_artist.isChecked()
+        
+        if only_title and not only_artist:
+            search_query = song_name
+        elif only_artist and not only_title:
+            search_query = first_artist if first_artist else song_name
+        else:
+            search_query = f"{song_name} {first_artist}" if first_artist else song_name
+
+        extra_kw = self.ipt_extra_keyword.text().strip()
+        if extra_kw:
+            search_query = f"{search_query} {extra_kw}"
+        # --------------------------
+
         self.log(f"🔍 最终进入B站搜索指令: <b>{search_query}</b>")
         mode = TaskMode.AUTO if self.btn_auto.isChecked() else TaskMode.SEARCH_ONLY
         self.start_process(search_query, mode, song_name=song_name, raw_filename=raw_filename)
