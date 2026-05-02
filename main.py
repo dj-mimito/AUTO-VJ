@@ -26,7 +26,6 @@ from PyQt6.QtGui import QIcon
 from enum import Enum
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs, quote
-from selenium import webdriver
 
 # ============================================================================
 # [核心修复] - 全局致命异常捕获器 (杜绝无提示默默闪退)
@@ -400,9 +399,15 @@ class BrowserEngine:
     def _cleanup_processes():
         try:
             if sys.platform == "win32":
+                # 清理由于连接失败可能残留的无头驱动
                 subprocess.run("taskkill /f /im chromedriver.exe", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 subprocess.run("taskkill /f /im vdj_chromedriver.exe", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                # 不再强杀 chrome.exe，防止关闭用户正在使用的日常浏览器
+                # [终极狙杀] 解决无限弹窗的核心：仅查杀属于我们特定配置文件的 chrome 残尸，保护用户个人日常浏览器
+                try:
+                    kill_cmd = r'wmic process where "name=\'chrome.exe\' and CommandLine like \'%vdj_browser_profile%\'" call terminate'
+                    subprocess.run(kill_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
             time.sleep(0.3)
         except Exception:
             pass
@@ -436,41 +441,77 @@ class BrowserEngine:
             except Exception as e:
                 print(f"[Engine] Edge 启动失败: {e}，将回退到 Chrome...")
 
-        # 原有 Chrome 启动逻辑
-        options = uc.ChromeOptions()
-        options.add_argument("--disable-gpu")
-        options.add_argument("--mute-audio")
+        # 原有 Chrome 启动逻辑：为避免 you cannot reuse the ChromeOptions object 报错，
+        # 改为通过工厂函数获取全新 options 实例
+        def get_chrome_options():
+            opts = uc.ChromeOptions()
+            opts.add_argument("--disable-gpu")
+            opts.add_argument("--mute-audio")
+            return opts
         
-        # [核心打包防闪退补丁]：解决 C盘 或只读目录下的 [Errno 13] 权限拒绝错误
-        # undetected_chromedriver 需要修改 exe 文件来去除防爬虫特征。如果目录无权写，就会闪退。
-        # 解决办法：自动将其克隆到系统 Temp 临时目录(100%有读写权限)执行。
         runnable_driver_path = DRIVER_PATH
-        if os.path.exists(DRIVER_PATH):
+        has_local_driver = os.path.exists(DRIVER_PATH)
+        
+        if has_local_driver:
             temp_dir = tempfile.gettempdir()
             runnable_driver_path = os.path.join(temp_dir, "vdj_chromedriver.exe")
             try:
                 shutil.copy2(DRIVER_PATH, runnable_driver_path)
             except Exception as e:
-                print(f"[Engine] 驱动转移警告: {e}")
                 runnable_driver_path = DRIVER_PATH
                 
         try:
-            if os.path.exists(runnable_driver_path):
-                cls._driver = uc.Chrome(
-                    options=options,
-                    user_data_dir=PROFILE_DIR,
-                    use_subprocess=True,
-                    driver_executable_path=runnable_driver_path
-                )
+            if has_local_driver:
+                try:
+                    cls._driver = uc.Chrome(
+                        options=get_chrome_options(),
+                        user_data_dir=PROFILE_DIR,
+                        use_subprocess=True,
+                        driver_executable_path=runnable_driver_path
+                    )
+                except Exception as e:
+                    error_msg = str(e)
+                    # [自适应解析引擎] 使用正则从报错中精准抓取用户当前的 Chrome 主版本号 (例如 147)
+                    match = re.search(r"Current browser version is (\d+)", error_msg)
+                    if "version of chromedriver only supports" in error_msg.lower() or "session not created" in error_msg.lower():
+                        v_main = int(match.group(1)) if match else None
+                        cls._cleanup_processes() # 必须先杀掉刚才连接失败产生的丧尸浏览器，防止屏幕占满
+                        
+                        if v_main:
+                            print(f"\n=======================================================")
+                            print(f"🔄 [自动更新引擎] 检测到您的 Chrome 浏览器已自动升级！")
+                            print(f"💡 提取到您当前的 Chrome 真实主版本号为: {v_main}")
+                            print(f"🚀 正在后台激活专属通道，为您自动下载并适配 v{v_main} 驱动...")
+                            print(f"⏳ 请耐心等待数十秒 (视网络情况而定)，完成后将自动恢复！")
+                            print(f"=======================================================\n")
+                            # [灵魂机制]：将抓取到的 v_main 传递给 undetected_chromedriver 
+                            # 激活其内部隐蔽的自动下载器，完美实现终身自愈更新，且不受 exe 打包限制！
+                            cls._driver = uc.Chrome(
+                                options=get_chrome_options(),
+                                user_data_dir=PROFILE_DIR,
+                                use_subprocess=True,
+                                version_main=v_main 
+                            )
+                        else:
+                            print(f"[Engine] 无法精准识别版本，尝试让系统自动适配最新驱动...")
+                            cls._driver = uc.Chrome(
+                                options=get_chrome_options(),
+                                user_data_dir=PROFILE_DIR,
+                                use_subprocess=True
+                            )
+                    else:
+                        raise e
             else:
                 cls._driver = uc.Chrome(
-                    options=options,
+                    options=get_chrome_options(),
                     user_data_dir=PROFILE_DIR,
                     use_subprocess=True
                 )
+                
             cls._driver.set_window_rect(100, 100, 1280, 720)
             print("[Engine] 浏览器后端已稳定运行")
         except Exception as e:
+            cls._cleanup_processes() # 无论如何失败，都要狙杀丧尸浏览器，绝对不留垃圾弹窗
             raise e
             
     @classmethod
@@ -539,13 +580,19 @@ class VDJPoller(QThread):
         self.network_ok = False
         self.current_deck = "active"
         
+        # 1. 引入持久化 Session 极大降低 CPU 与网络开销，并开启重试
+        self.session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=2)
+        self.session.mount('http://', adapter)
+        
     def run(self):
         while self.running:
             time.sleep(0.2) 
             
             if not self.network_ok:
                 try:
-                    r = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=get_clock", timeout=0.5)
+                    # 稍微放宽心跳检测的超时时间
+                    r = self.session.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=get_clock", timeout=1.0)
                     if r.status_code == 200:
                         self.network_ok = True
                         self.network_ok_signal.emit()
@@ -563,11 +610,10 @@ class VDJPoller(QThread):
                     'orig_bpm': 0.0
                 }
                 
-                # 获取当前被锁定的目标 Deck (不受音量推子自动切焦点干扰)
                 deck_str = self.current_deck
                 
-                # 1. 获取播放状态
-                r_play = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{deck_str}%20play", timeout=0.1)
+                # 2. 将所有 timeout=0.1 统一放宽至 timeout=1.0，防止 VDJ 繁忙时直接判定掉线
+                r_play = self.session.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{deck_str}%20play", timeout=1.0)
                 if r_play.status_code == 200:
                     play_str = r_play.text.strip().lower()
                     if play_str.replace('.', '', 1).isdigit():
@@ -575,15 +621,14 @@ class VDJPoller(QThread):
                     else:
                         state['is_playing'] = play_str in ['yes', 'true', 'on', '1']
                         
-                # 2. 获取准确的 BPM 与 倍率
                 target_rate = 1.0
                 cur_bpm = 0.0
                 orig_bpm = 0.0
                 bpm_valid = False
                 
                 try:
-                    r_bpm = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{deck_str}%20get_bpm", timeout=0.1)
-                    r_obpm = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{deck_str}%20get_bpm%20%27absolute%27", timeout=0.1)
+                    r_bpm = self.session.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{deck_str}%20get_bpm", timeout=1.0)
+                    r_obpm = self.session.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{deck_str}%20get_bpm%20%27absolute%27", timeout=1.0)
                     if r_bpm.status_code == 200 and r_obpm.status_code == 200:
                         bpm_str = r_bpm.text.strip()
                         obpm_str = r_obpm.text.strip()
@@ -595,10 +640,10 @@ class VDJPoller(QThread):
                                 bpm_valid = True
                 except Exception:
                     pass
-                
+                    
                 if not bpm_valid:
                     try:
-                        r_pitch = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{deck_str}%20get_pitch_value", timeout=0.1)
+                        r_pitch = self.session.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{deck_str}%20get_pitch_value", timeout=1.0)
                         if r_pitch.status_code == 200:
                             pitch_str = r_pitch.text.strip().replace('%', '')
                             if "error" not in pitch_str.lower():
@@ -611,7 +656,7 @@ class VDJPoller(QThread):
                                 cur_bpm = orig_bpm * target_rate
                     except Exception:
                         pass
-                
+                        
                 if math.isnan(target_rate) or math.isinf(target_rate):
                     target_rate = 1.0
                     
@@ -619,8 +664,7 @@ class VDJPoller(QThread):
                 state['cur_bpm'] = cur_bpm
                 state['orig_bpm'] = orig_bpm
                         
-                # 获取物理游标比例 (0.0~1.0)
-                r_pos = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{deck_str}%20get_position", timeout=0.1)
+                r_pos = self.session.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{deck_str}%20get_position", timeout=1.0)
                 if r_pos.status_code == 200:
                     pos_str = r_pos.text.strip()
                     if "error" not in pos_str.lower():
@@ -628,8 +672,7 @@ class VDJPoller(QThread):
                         if val >= 0:
                             state['pos_ratio'] = val
                             
-                # 获取备用绝对时间
-                r_time = requests.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{deck_str}%20get_time%20%27absolute%27", timeout=0.1)
+                r_time = self.session.get(f"http://127.0.0.1:{APP_CONFIG['vdj_port']}/query?script=deck%20{deck_str}%20get_time%20%27absolute%27", timeout=1.0)
                 if r_time.status_code == 200:
                     parsed_ms = parse_vdj_time_to_ms(r_time.text)
                     if parsed_ms is not None:
@@ -639,6 +682,8 @@ class VDJPoller(QThread):
             except Exception as e:
                 self.network_ok = False
                 self.network_error_signal.emit(str(e))
+                # 3. 错峰避让：如果发生碰撞掉线，随机休眠 0.2~0.5 秒再继续，错开并发峰值
+                time.sleep(random.uniform(0.2, 0.5))
                 
     def stop(self):
         self.running = False
